@@ -37,7 +37,7 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import paramiko
 
@@ -47,6 +47,12 @@ END_MARKER = "** end"
 # Example line:
 # *e Macros Log Level: TRACE
 LINE_RE = re.compile(r"^\*e\s+Macros\s+Log\s+(?P<key>[^:]+):\s+(?P<val>.*)\s*$")
+
+# Example line:
+# *r LogGetResult Line 22314 Level: DEBUG
+RESULT_RE = re.compile(
+    r"^\*r\s+LogGetResult\s+Line\s+(?P<idx>\d+)\s+(?P<key>\w+):\s+(?P<val>.*)\s*$"
+)
 
 # Example line:
 # *s Peripherals ConnectedDevice 1 SerialNumber: "T4AHKJB123456"
@@ -236,6 +242,46 @@ def connect_ssh(host: str, port: int, username: str,
     return client
 
 
+def fetch_history(chan: paramiko.Channel, timeout: float = 10.0) -> List[MacroLogEvent]:
+    """Send 'xcommand Macros Log Get' and parse all result entries."""
+    chan.send("xcommand Macros Log Get\n")
+
+    buf = ""
+    deadline = time.time() + timeout
+    entries: Dict[int, Dict[str, str]] = {}
+
+    while time.time() < deadline:
+        if chan.recv_ready():
+            data = chan.recv(65535)
+            if not data:
+                break
+            buf += data.decode("utf-8", errors="replace")
+
+            while "\n" in buf:
+                line, buf = buf.split("\n", 1)
+                line = line.rstrip("\r")
+
+                if line.strip() == END_MARKER:
+                    # Build ordered list of events from parsed entries
+                    events: List[MacroLogEvent] = []
+                    for idx in sorted(entries):
+                        events.append(MacroLogEvent.from_kv(entries[idx]))
+                    return events
+
+                m = RESULT_RE.match(line)
+                if m:
+                    idx = int(m.group("idx"))
+                    entries.setdefault(idx, {})[m.group("key")] = m.group("val")
+        else:
+            time.sleep(0.03)
+
+    # Timed out – return whatever we have
+    events = []
+    for idx in sorted(entries):
+        events.append(MacroLogEvent.from_kv(entries[idx]))
+    return events
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Tail Cisco RoomOS macro logs over SSH and print in columns.")
     ap.add_argument("host", help="IP or hostname of the RoomOS device")
@@ -249,6 +295,9 @@ def main() -> int:
     ap.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
     ap.add_argument("--cols", default="ts,level,macro,msg",
                     help="Comma-separated columns: ts,level,macro,msg (default: ts,level,macro,msg)")
+
+    ap.add_argument("--history", action="store_true",
+                    help="Show historical macro log (xcommand Macros Log Get) at startup before monitoring")
 
     ap.add_argument("--peripherals", action="store_true",
                     help="Also subscribe to Status/Peripherals/ConnectedDevice/SerialNumber and log serial number changes")
@@ -308,10 +357,6 @@ def main() -> int:
         while chan.recv_ready():
             _ = chan.recv(65535)
 
-        send("xFeedback register Event/Macros/Log")
-        if args.peripherals:
-            send("xFeedback register Status/Peripherals/ConnectedDevice/SerialNumber")
-
         # Terminal sizing
         last_size_check = 0.0
         term_cols = shutil.get_terminal_size(fallback=(120, 40)).columns
@@ -349,6 +394,18 @@ def main() -> int:
 
             print(header)
             print("-" * min(len(header), term_cols))
+
+        # Fetch and display historical log entries before live monitoring
+        if args.history:
+            history_events = fetch_history(chan)
+            for evt in history_events:
+                print(make_row(evt), flush=True)
+            if history_events:
+                print(f"{'─' * min(term_cols, 40)}  (live)", flush=True)
+
+        send("xFeedback register Event/Macros/Log")
+        if args.peripherals:
+            send("xFeedback register Status/Peripherals/ConnectedDevice/SerialNumber")
 
         buffer = ""
         kv: Dict[str, str] = {}
