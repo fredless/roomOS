@@ -344,6 +344,9 @@ def main() -> int:
             print("SSH transport not available.", file=sys.stderr)
             return 1
 
+        # Send SSH keepalive every 15 seconds so we detect dead connections
+        transport.set_keepalive(15)
+
         chan = transport.open_session()
         chan.get_pty()
         chan.invoke_shell()
@@ -422,9 +425,14 @@ def main() -> int:
                     # Optional: print a subtle resize note (commented out)
                     # print(f"\x1b[90m(resized to {term_cols} cols)\x1b[0m", file=sys.stderr)
 
+            if not transport.is_active() or chan.closed:
+                print("\nConnection lost.", file=sys.stderr)
+                break
+
             if chan.recv_ready():
                 data = chan.recv(65535)
                 if not data:
+                    print("\nConnection closed by remote host.", file=sys.stderr)
                     break
                 buffer += data.decode("utf-8", errors="replace")
 
