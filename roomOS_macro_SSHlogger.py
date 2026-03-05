@@ -14,16 +14,18 @@
 # 
 # You should have received a copy of the GNU General Public License
 # along with roomOS.  If not, see <https://www.gnu.org/licenses/>.
-# Tail Cisco RoomOS macro logs over SSH and print to stdout in columns.
-
-# - Connects via SSH
-# - Runs: xFeedback register Event/Macros/Log
-# - Parses each "** end" block into one row: Timestamp | Level | Macro | Message
+# Tail Cisco RoomOS macro logs and print to stdout in columns.
+#
+# Modes:
+#   local  - SSH into device, subscribe via xFeedback (real-time)
+#   cloud  - Webex Cloud xAPI REST, poll Macros.Log.Get at an interval
+#
+# - Parses each log entry into one row: Timestamp | Level | Macro | Message
 # - Auto-sizes columns to the current terminal width, trimming with ellipses
 # - Optional colorization by level (Windows Terminal supports ANSI)
-
+#
 # Requires:
-#   pip install paramiko
+#   pip install paramiko requests
 #!/usr/bin/env python3
 
 from __future__ import annotations
@@ -40,6 +42,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import paramiko
+import requests
 
 
 END_MARKER = "** end"
@@ -208,6 +211,40 @@ def compute_widths(term_cols: int, show_ts: bool, show_level: bool, show_macro: 
     return w_ts, w_level, w_macro, w_msg
 
 
+def cloud_fetch_log(device_id: str, token: str, base_url: str,
+                    timeout: int) -> List[MacroLogEvent]:
+    """POST /v1/xapi/command/Macros.Log.Get and parse result into MacroLogEvents."""
+    url = f"{base_url.rstrip('/')}/v1/xapi/command/Macros.Log.Get"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    payload = {"deviceId": device_id, "arguments": {}}
+
+    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
+    if not resp.ok:
+        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
+
+    data = resp.json() if resp.text.strip() else {}
+    result = data.get("result", {})
+
+    # Navigate into LogGetResult -> Line (may be a list of dicts or nested)
+    log_result = result.get("LogGetResult", result)
+    lines = log_result.get("Line", [])
+
+    # lines may be a single dict (one entry) instead of a list
+    if isinstance(lines, dict):
+        lines = [lines]
+
+    events: List[MacroLogEvent] = []
+    for entry in lines:
+        if isinstance(entry, dict):
+            events.append(MacroLogEvent.from_kv(entry))
+
+    return events
+
+
 def connect_ssh(host: str, port: int, username: str,
                 password: Optional[str],
                 key_path: Optional[str],
@@ -283,38 +320,52 @@ def fetch_history(chan: paramiko.Channel, timeout: float = 10.0) -> List[MacroLo
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Tail Cisco RoomOS macro logs over SSH and print in columns.")
-    ap.add_argument("host", help="IP or hostname of the RoomOS device")
-    ap.add_argument("-P", "--port", type=int, default=22, help="SSH port (default: 22)")
-    ap.add_argument("-u", "--username", required=True, help="SSH username (e.g., admin)")
-    ap.add_argument("-p", "--password", help="SSH password (omit to prompt)")
-    ap.add_argument("-k", "--key", dest="key_path", help="Path to SSH private key (optional)")
-    ap.add_argument("--timeout", type=int, default=10, help="SSH connect timeout seconds (default: 10)")
+    ap = argparse.ArgumentParser(
+        description="Tail Cisco RoomOS macro logs and print in columns (SSH or Cloud xAPI)."
+    )
+    sub = ap.add_subparsers(dest="mode", required=True)
 
-    ap.add_argument("--no-header", action="store_true", help="Do not print header row")
-    ap.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
-    ap.add_argument("--cols", default="ts,level,macro,msg",
-                    help="Comma-separated columns: ts,level,macro,msg (default: ts,level,macro,msg)")
+    # ---- local (SSH) subcommand ----
+    ap_local = sub.add_parser("local", help="Monitor via local SSH xAPI")
+    ap_local.add_argument("--host", required=True, help="IP or hostname of the RoomOS device")
+    ap_local.add_argument("-P", "--port", type=int, default=22, help="SSH port (default: 22)")
+    ap_local.add_argument("-u", "--username", required=True, help="SSH username (e.g., admin)")
+    ap_local.add_argument("-p", "--password", help="SSH password (omit to prompt)")
+    ap_local.add_argument("-k", "--key", dest="key_path", help="Path to SSH private key (optional)")
+    ap_local.add_argument("--timeout", type=int, default=10, help="SSH connect timeout seconds (default: 10)")
+    ap_local.add_argument("--peripherals", action="store_true",
+                          help="Also subscribe to Status/Peripherals/ConnectedDevice/SerialNumber")
+    ap_local.add_argument("--reconnect", action="store_true",
+                          help="Automatically reconnect and resume logging on disconnect")
+    ap_local.add_argument("--reconnect-delay", type=float, default=5.0,
+                          help="Seconds to wait before reconnecting (default: 5.0)")
 
-    ap.add_argument("--history", action="store_true",
-                    help="Show historical macro log (xcommand Macros Log Get) at startup before monitoring")
+    # ---- cloud subcommand ----
+    ap_cloud = sub.add_parser("cloud", help="Monitor via Webex Cloud xAPI (polling)")
+    ap_cloud.add_argument("--device-id", required=True, help="Webex deviceId of the codec")
+    ap_cloud.add_argument("--token", help="Webex access token (omit to prompt)")
+    ap_cloud.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
+    ap_cloud.add_argument("--timeout", type=int, default=15, help="HTTP timeout seconds (default: 15)")
+    ap_cloud.add_argument("--poll-interval", type=float, default=10.0,
+                          help="Seconds between polls (default: 10.0)")
 
-    ap.add_argument("--peripherals", action="store_true",
-                    help="Also subscribe to Status/Peripherals/ConnectedDevice/SerialNumber and log serial number changes")
-
-    # how often to re-check terminal width (seconds)
-    ap.add_argument("--resize-interval", type=float, default=1.0,
-                    help="How often to re-check terminal width in seconds (default: 1.0)")
+    # ---- shared args on both subparsers ----
+    for p in (ap_local, ap_cloud):
+        p.add_argument("--no-header", action="store_true", help="Do not print header row")
+        p.add_argument("--no-color", action="store_true", help="Disable ANSI colors")
+        p.add_argument("--cols", default="ts,level,macro,msg",
+                       help="Comma-separated columns: ts,level,macro,msg (default: ts,level,macro,msg)")
+        p.add_argument("--history", action="store_true",
+                       help="Show historical macro log at startup before monitoring")
+        p.add_argument("--resize-interval", type=float, default=1.0,
+                       help="How often to re-check terminal width in seconds (default: 1.0)")
 
     args = ap.parse_args()
 
     if not args.no_color:
         enable_ansi_on_windows()
 
-    if not args.password and not args.key_path:
-        args.password = getpass.getpass("SSH Password: ")
-
-    # Column selection
+    # ---- Column selection (shared) ----
     allowed = {"ts", "level", "macro", "msg"}
     requested = [c.strip().lower() for c in args.cols.split(",") if c.strip()]
     for c in requested:
@@ -329,163 +380,257 @@ def main() -> int:
     if not (show_ts or show_level or show_macro or show_msg):
         show_msg = True
 
-    # Connect SSH
-    try:
-        client = connect_ssh(args.host, args.port, args.username, args.password, args.key_path, args.timeout)
-    except Exception as e:
-        print(f"SSH connect failed: {e}", file=sys.stderr)
-        return 1
+    # Terminal sizing (persists across reconnects / polls)
+    term_cols = shutil.get_terminal_size(fallback=(120, 40)).columns
+    w_ts, w_level, w_macro, w_msg = compute_widths(term_cols, show_ts, show_level, show_macro, show_msg)
 
-    # Prepare session
-    chan = None
-    try:
-        transport = client.get_transport()
-        if transport is None:
-            print("SSH transport not available.", file=sys.stderr)
+    def make_row(evt: MacroLogEvent) -> str:
+        parts = []
+        if show_ts:
+            parts.append(ellipsize(evt.timestamp, w_ts).ljust(w_ts))
+        if show_level:
+            lvl = ellipsize(evt.level, w_level).ljust(w_level)
+            if args.no_color:
+                parts.append(lvl)
+            else:
+                parts.append(f"{color_for_level(evt.level)}{lvl}{RESET}")
+        if show_macro:
+            parts.append(ellipsize(evt.macro, w_macro).ljust(w_macro))
+        if show_msg:
+            parts.append(ellipsize(evt.message, w_msg))
+        return "  ".join(parts)
+
+    def check_resize() -> None:
+        nonlocal term_cols, w_ts, w_level, w_macro, w_msg
+        new_cols = shutil.get_terminal_size(fallback=(term_cols, 40)).columns
+        if new_cols != term_cols:
+            term_cols = new_cols
+            w_ts, w_level, w_macro, w_msg = compute_widths(term_cols, show_ts, show_level, show_macro, show_msg)
+
+    def print_header() -> None:
+        if args.no_header:
+            return
+        header_evt = MacroLogEvent(
+            timestamp="Timestamp",
+            level="Level",
+            macro="Macro",
+            message="Message",
+        )
+        saved_no_color = args.no_color
+        args.no_color = True
+        header = make_row(header_evt)
+        args.no_color = saved_no_color
+        print(header)
+        print("-" * min(len(header), term_cols))
+
+    print_header()
+
+    # =================================================================
+    # Cloud polling mode
+    # =================================================================
+    if args.mode == "cloud":
+        token = args.token or getpass.getpass("Webex Access Token: ")
+
+        seen: set[Tuple[str, str, str, str]] = set()
+
+        # Initial fetch
+        try:
+            events = cloud_fetch_log(args.device_id, token, args.base_url, args.timeout)
+        except Exception as e:
+            print(f"ERROR: {e}", file=sys.stderr)
             return 1
 
-        # Send SSH keepalive every 15 seconds so we detect dead connections
-        transport.set_keepalive(15)
-
-        chan = transport.open_session()
-        chan.get_pty()
-        chan.invoke_shell()
-
-        def send(cmd: str) -> None:
-            assert chan is not None
-            chan.send(cmd + "\n")
-
-        # Drain initial prompt/banners
-        time.sleep(0.25)
-        while chan.recv_ready():
-            _ = chan.recv(65535)
-
-        # Terminal sizing
-        last_size_check = 0.0
-        term_cols = shutil.get_terminal_size(fallback=(120, 40)).columns
-        w_ts, w_level, w_macro, w_msg = compute_widths(term_cols, show_ts, show_level, show_macro, show_msg)
-
-        def make_row(evt: MacroLogEvent) -> str:
-            parts = []
-            if show_ts:
-                parts.append(ellipsize(evt.timestamp, w_ts).ljust(w_ts))
-            if show_level:
-                lvl = ellipsize(evt.level, w_level).ljust(w_level)
-                if args.no_color:
-                    parts.append(lvl)
-                else:
-                    parts.append(f"{color_for_level(evt.level)}{lvl}{RESET}")
-            if show_macro:
-                parts.append(ellipsize(evt.macro, w_macro).ljust(w_macro))
-            if show_msg:
-                # message: trim to width but don't pad; it's last column
-                parts.append(ellipsize(evt.message, w_msg))
-            return "  ".join(parts)
-
-        if not args.no_header:
-            header_evt = MacroLogEvent(
-                timestamp="Timestamp",
-                level="Level",
-                macro="Macro",
-                message="Message",
-            )
-            # build header without color
-            saved_no_color = args.no_color
-            args.no_color = True
-            header = make_row(header_evt)
-            args.no_color = saved_no_color
-
-            print(header)
-            print("-" * min(len(header), term_cols))
-
-        # Fetch and display historical log entries before live monitoring
-        if args.history:
-            history_events = fetch_history(chan)
-            for evt in history_events:
+        for evt in events:
+            key = (evt.timestamp, evt.level, evt.macro, evt.message)
+            seen.add(key)
+            if args.history:
                 print(make_row(evt), flush=True)
-            if history_events:
-                print(f"{'─' * min(term_cols, 40)}  (live)", flush=True)
 
-        send("xFeedback register Event/Macros/Log")
-        if args.peripherals:
-            send("xFeedback register Status/Peripherals/ConnectedDevice/SerialNumber")
+        if args.history and events:
+            print(f"{'─' * min(term_cols, 40)}  (polling every {args.poll_interval:.0f}s)", flush=True)
 
-        buffer = ""
-        kv: Dict[str, str] = {}
-        status_kv: Dict[str, str] = {}
+        # Poll loop
+        try:
+            while True:
+                time.sleep(args.poll_interval)
+                check_resize()
 
-        while True:
-            now = time.time()
-            if now - last_size_check >= args.resize_interval:
-                last_size_check = now
-                new_cols = shutil.get_terminal_size(fallback=(term_cols, 40)).columns
-                if new_cols != term_cols:
-                    term_cols = new_cols
-                    w_ts, w_level, w_macro, w_msg = compute_widths(term_cols, show_ts, show_level, show_macro, show_msg)
-                    # Optional: print a subtle resize note (commented out)
-                    # print(f"\x1b[90m(resized to {term_cols} cols)\x1b[0m", file=sys.stderr)
+                try:
+                    events = cloud_fetch_log(args.device_id, token, args.base_url, args.timeout)
+                except Exception as e:
+                    print(f"\x1b[90m[{datetime.now().strftime('%H:%M:%S')}] Poll error: {e}\x1b[0m",
+                          file=sys.stderr, flush=True)
+                    continue
 
-            if not transport.is_active() or chan.closed:
-                print("\nConnection lost.", file=sys.stderr)
-                break
+                for evt in events:
+                    key = (evt.timestamp, evt.level, evt.macro, evt.message)
+                    if key not in seen:
+                        seen.add(key)
+                        print(make_row(evt), flush=True)
+        except KeyboardInterrupt:
+            print("\nStopping…", file=sys.stderr)
+            return 0
 
-            if chan.recv_ready():
-                data = chan.recv(65535)
-                if not data:
-                    print("\nConnection closed by remote host.", file=sys.stderr)
+    # =================================================================
+    # Local SSH mode (existing behaviour)
+    # =================================================================
+    if not args.password and not args.key_path:
+        args.password = getpass.getpass("SSH Password: ")
+
+    first_connect = True
+
+    while True:
+        # Connect SSH
+        try:
+            client = connect_ssh(args.host, args.port, args.username, args.password, args.key_path, args.timeout)
+        except Exception as e:
+            if not args.reconnect:
+                print(f"SSH connect failed: {e}", file=sys.stderr)
+                return 1
+            print(f"\x1b[90m[{datetime.now().strftime('%H:%M:%S')}] Connect failed: {e} "
+                  f"– retrying in {args.reconnect_delay:.0f}s…\x1b[0m", file=sys.stderr)
+            try:
+                time.sleep(args.reconnect_delay)
+            except KeyboardInterrupt:
+                print("\nStopping…", file=sys.stderr)
+                return 0
+            continue
+
+        chan = None
+        disconnected = False
+        try:
+            transport = client.get_transport()
+            if transport is None:
+                print("SSH transport not available.", file=sys.stderr)
+                if not args.reconnect:
+                    return 1
+                disconnected = True
+                continue
+
+            # Aggressive keepalive: 5 seconds
+            transport.set_keepalive(5)
+
+            chan = transport.open_session()
+            chan.get_pty()
+            chan.invoke_shell()
+
+            def send(cmd: str) -> None:
+                assert chan is not None
+                chan.send(cmd + "\n")
+
+            # Drain initial prompt/banners
+            time.sleep(0.25)
+            while chan.recv_ready():
+                _ = chan.recv(65535)
+
+            if not first_connect:
+                print(f"\x1b[90m[{datetime.now().strftime('%H:%M:%S')}] Reconnected.\x1b[0m",
+                      file=sys.stderr, flush=True)
+
+            # Fetch and display historical log entries on first connect only
+            if args.history and first_connect:
+                history_events = fetch_history(chan)
+                for evt in history_events:
+                    print(make_row(evt), flush=True)
+                if history_events:
+                    print(f"{'─' * min(term_cols, 40)}  (live)", flush=True)
+
+            first_connect = False
+
+            send("xFeedback register Event/Macros/Log")
+            if args.peripherals:
+                send("xFeedback register Status/Peripherals/ConnectedDevice/SerialNumber")
+
+            buffer = ""
+            kv: Dict[str, str] = {}
+            status_kv: Dict[str, str] = {}
+            last_size_check = 0.0
+
+            while True:
+                now = time.time()
+                if now - last_size_check >= args.resize_interval:
+                    last_size_check = now
+                    check_resize()
+
+                if not transport.is_active() or chan.closed:
+                    print(f"\n\x1b[90m[{datetime.now().strftime('%H:%M:%S')}] Connection lost.\x1b[0m",
+                          file=sys.stderr, flush=True)
+                    disconnected = True
                     break
-                buffer += data.decode("utf-8", errors="replace")
 
-                while "\n" in buffer:
-                    line, buffer = buffer.split("\n", 1)
-                    line = line.rstrip("\r")
+                if chan.recv_ready():
+                    data = chan.recv(65535)
+                    if not data:
+                        print(f"\n\x1b[90m[{datetime.now().strftime('%H:%M:%S')}] Connection closed by remote host.\x1b[0m",
+                              file=sys.stderr, flush=True)
+                        disconnected = True
+                        break
+                    buffer += data.decode("utf-8", errors="replace")
 
-                    if line.strip() == END_MARKER:
-                        if kv:
-                            evt = MacroLogEvent.from_kv(kv)
-                            kv = {}
-                            print(make_row(evt), flush=True)
-                        elif status_kv:
-                            ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-                            for path, val in status_kv.items():
-                                clean_val = val.strip('"').strip("'")
-                                evt = MacroLogEvent(
-                                    timestamp=ts,
-                                    level="INFO",
-                                    macro="Peripheral",
-                                    message=f"{path}: {clean_val}",
-                                )
+                    while "\n" in buffer:
+                        line, buffer = buffer.split("\n", 1)
+                        line = line.rstrip("\r")
+
+                        if line.strip() == END_MARKER:
+                            if kv:
+                                evt = MacroLogEvent.from_kv(kv)
+                                kv = {}
                                 print(make_row(evt), flush=True)
-                            status_kv = {}
-                        continue
+                            elif status_kv:
+                                ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                                for path, val in status_kv.items():
+                                    clean_val = val.strip('"').strip("'")
+                                    evt = MacroLogEvent(
+                                        timestamp=ts,
+                                        level="INFO",
+                                        macro="Peripheral",
+                                        message=f"{path}: {clean_val}",
+                                    )
+                                    print(make_row(evt), flush=True)
+                                status_kv = {}
+                            continue
 
-                    m = LINE_RE.match(line)
-                    if m:
-                        key = m.group("key").strip()
-                        val = m.group("val").strip()
-                        kv[key] = val
-                        continue
+                        m = LINE_RE.match(line)
+                        if m:
+                            key = m.group("key").strip()
+                            val = m.group("val").strip()
+                            kv[key] = val
+                            continue
 
-                    if args.peripherals:
-                        m2 = STATUS_LINE_RE.match(line)
-                        if m2:
-                            status_kv[m2.group("path").strip()] = m2.group("val").strip()
-            else:
-                time.sleep(0.03)
+                        if args.peripherals:
+                            m2 = STATUS_LINE_RE.match(line)
+                            if m2:
+                                status_kv[m2.group("path").strip()] = m2.group("val").strip()
+                else:
+                    time.sleep(0.03)
 
-    except KeyboardInterrupt:
-        print("\nStopping…", file=sys.stderr)
-    finally:
+        except KeyboardInterrupt:
+            print("\nStopping…", file=sys.stderr)
+            return 0
+        finally:
+            try:
+                if chan is not None and chan.send_ready():
+                    chan.send("xFeedback deregisterall\n")
+                    time.sleep(0.05)
+            except Exception:
+                pass
+            try:
+                client.close()
+            except Exception:
+                pass
+
+        if not disconnected or not args.reconnect:
+            break
+
+        # Wait before reconnecting
         try:
-            if chan is not None and chan.send_ready():
-                chan.send("xFeedback deregisterall\n")
-                time.sleep(0.05)
-        except Exception:
-            pass
-        try:
-            client.close()
-        except Exception:
-            pass
+            print(f"\x1b[90m[{datetime.now().strftime('%H:%M:%S')}] "
+                  f"Reconnecting in {args.reconnect_delay:.0f}s…\x1b[0m",
+                  file=sys.stderr, flush=True)
+            time.sleep(args.reconnect_delay)
+        except KeyboardInterrupt:
+            print("\nStopping…", file=sys.stderr)
+            return 0
 
     return 0
 
