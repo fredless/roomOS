@@ -2,20 +2,19 @@
 """
 roomos_dial.py
 
-Place a call from a Cisco RoomOS codec using either:
+Place a call or check call status on a Cisco RoomOS codec using either:
   - local xAPI over SSH
   - Webex Cloud xAPI REST
 
-Local command:
+Dial (local):
   xCommand Dial Number: "<destination>" [CallType: Video|Audio] [Protocol: SIP|Spark|...]
-  (Destination can be SIP URI, number, etc. depending on your dialing plan.)
 
-Cloud command:
+Dial (cloud):
   POST https://webexapis.com/v1/xapi/command/Dial
-  {
-    "deviceId": "...",
-    "arguments": { "Number": "...", "CallType": "Video" }
-  }
+
+Status (--status):
+  Local:  xStatus Call
+  Cloud:  GET https://webexapis.com/v1/xapi/status?name=Call
 
 Deps:
   pip install paramiko requests
@@ -208,6 +207,23 @@ def cloud_dial(device_id: str, token: str, number: str, args: List[Tuple[str, st
     return resp.json() if resp.text.strip() else {"status": "ok"}
 
 
+def cloud_call_status(device_id: str, token: str, base_url: str,
+                      timeout: int) -> Dict[str, Any]:
+    """GET https://webexapis.com/v1/xapi/status?deviceId=...&name=Call[*].*"""
+    url = f"{base_url.rstrip('/')}/v1/xapi/status"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    params = {"deviceId": device_id, "name": "Call[*].*"}
+
+    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+    if not resp.ok:
+        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
+
+    return resp.json() if resp.text.strip() else {"status": "no active calls"}
+
+
 # -------------------------
 # CLI
 # -------------------------
@@ -231,43 +247,69 @@ def main() -> int:
     ap_cloud.add_argument("--timeout", type=int, default=15, help="HTTP timeout seconds (default: 15)")
 
     for p in (ap_local, ap_cloud):
-        p.add_argument("--number", required=True, help="Dial string / destination (SIP URI, number, etc.)")
+        p.add_argument("--number", help="Dial string / destination (SIP URI, number, etc.)")
         p.add_argument("--arg", action="append", default=[],
                        help="Optional Dial argument key=value (repeatable), e.g. --arg CallType=Video --arg Protocol=SIP")
+        p.add_argument("--status", action="store_true",
+                       help="Show current call status (xStatus Call) instead of dialing")
 
     args = ap.parse_args()
 
     try:
+        if not args.status and not args.number:
+            print("ERROR: --number is required when not using --status", file=sys.stderr)
+            return 2
+
         dial_args = parse_kv(args.arg)
 
         if args.mode == "local":
             if not args.password and not args.key_path:
                 args.password = getpass.getpass("SSH Password: ")
 
-            cmd = build_dial_xcommand(args.number, dial_args)
-            out = ssh_run_xcommand(
-                host=args.host,
-                port=args.port,
-                username=args.username,
-                password=args.password,
-                key_path=args.key_path,
-                xcommand=cmd,
-                timeout=args.timeout,
-            )
+            if args.status:
+                out = ssh_run_xcommand(
+                    host=args.host,
+                    port=args.port,
+                    username=args.username,
+                    password=args.password,
+                    key_path=args.key_path,
+                    xcommand="xStatus Call",
+                    timeout=args.timeout,
+                )
+            else:
+                cmd = build_dial_xcommand(args.number, dial_args)
+                out = ssh_run_xcommand(
+                    host=args.host,
+                    port=args.port,
+                    username=args.username,
+                    password=args.password,
+                    key_path=args.key_path,
+                    xcommand=cmd,
+                    timeout=args.timeout,
+                )
             if out:
                 print(out)
             return 0
 
         if args.mode == "cloud":
             token = args.token or getpass.getpass("Webex Access Token: ")
-            result = cloud_dial(
-                device_id=args.device_id,
-                token=token,
-                number=args.number,
-                args=dial_args,
-                base_url=args.base_url,
-                timeout=args.timeout,
-            )
+
+            if args.status:
+                result = cloud_call_status(
+                    device_id=args.device_id,
+                    token=token,
+                    base_url=args.base_url,
+                    timeout=args.timeout,
+                )
+            else:
+                result = cloud_dial(
+                    device_id=args.device_id,
+                    token=token,
+                    number=args.number,
+                    args=dial_args,
+                    base_url=args.base_url,
+                    timeout=args.timeout,
+                )
             print(json.dumps(result, indent=2))
             return 0
 
