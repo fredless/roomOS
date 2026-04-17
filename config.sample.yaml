@@ -1,0 +1,12 @@
+# roomOS utilities – cloud mode configuration
+#
+# Copy this file to config.yaml and fill in your values.
+# config.yaml is git-ignored so your secrets stay local.
+#
+# CLI arguments (--token, --device-id) always override values from this file.
+
+# Webex access token (Bearer token for cloud xAPI calls)
+token: "YOUR_WEBEX_ACCESS_TOKEN_HERE"
+
+# Webex device ID of the target RoomOS codec
+device_id: "YOUR_DEVICE_ID_HERE"

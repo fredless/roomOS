@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import os
 import re
 import sys
 import time
@@ -32,8 +33,21 @@ from typing import Dict, Optional, Any, List, Tuple
 
 import paramiko
 import requests
+import yaml
 
 KV_RE = re.compile(r"^(?P<k>[^=]+)=(?P<v>.*)$")
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
+
+
+def load_config(path: str) -> Dict[str, Any]:
+    """Load token / device_id from a YAML config file. Returns {} on missing file."""
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    return data if isinstance(data, dict) else {}
 
 
 def parse_kv(items: List[str]) -> List[Tuple[str, str]]:
@@ -241,7 +255,9 @@ def main() -> int:
     ap_local.add_argument("--timeout", type=int, default=10, help="SSH timeout seconds (default: 10)")
 
     ap_cloud = sub.add_parser("cloud", help="Dial via Webex Cloud xAPI REST")
-    ap_cloud.add_argument("--device-id", required=True, help="Webex deviceId of the codec")
+    ap_cloud.add_argument("--config", default=_DEFAULT_CONFIG,
+                          help="Path to YAML config file with token/device_id (default: config.yaml beside script)")
+    ap_cloud.add_argument("--device-id", help="Webex deviceId of the codec")
     ap_cloud.add_argument("--token", help="Webex access token (omit to prompt)")
     ap_cloud.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
     ap_cloud.add_argument("--timeout", type=int, default=15, help="HTTP timeout seconds (default: 15)")
@@ -292,18 +308,23 @@ def main() -> int:
             return 0
 
         if args.mode == "cloud":
-            token = args.token or getpass.getpass("Webex Access Token: ")
+            cfg = load_config(args.config)
+            token = args.token or cfg.get("token") or getpass.getpass("Webex Access Token: ")
+            device_id = args.device_id or cfg.get("device_id")
+            if not device_id:
+                print("ERROR: --device-id is required (via CLI or config.yaml)", file=sys.stderr)
+                return 2
 
             if args.status:
                 result = cloud_call_status(
-                    device_id=args.device_id,
+                    device_id=device_id,
                     token=token,
                     base_url=args.base_url,
                     timeout=args.timeout,
                 )
             else:
                 result = cloud_dial(
-                    device_id=args.device_id,
+                    device_id=device_id,
                     token=token,
                     number=args.number,
                     args=dial_args,
