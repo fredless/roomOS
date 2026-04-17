@@ -406,6 +406,8 @@ def main() -> int:
                        help="How often to re-check terminal width in seconds (default: 1.0)")
         p.add_argument("--separator-char", default=SEPARATOR_CHAR,
                        help=f"Character for keypress separator line (default: {SEPARATOR_CHAR})")
+        p.add_argument("--no-truncate", action="store_true",
+                       help="Do not truncate the message column; print full (multi-line) messages")
 
     args = ap.parse_args()
 
@@ -444,7 +446,10 @@ def main() -> int:
         if show_macro:
             parts.append(ellipsize(evt.macro, w_macro).ljust(w_macro))
         if show_msg:
-            parts.append(ellipsize(evt.message, w_msg))
+            if args.no_truncate:
+                parts.append(evt.message)
+            else:
+                parts.append(ellipsize(evt.message, w_msg))
         return "  ".join(parts)
 
     def check_resize() -> None:
