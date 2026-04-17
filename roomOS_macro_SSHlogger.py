@@ -34,6 +34,7 @@ import argparse
 import getpass
 import os
 import re
+import select
 import shutil
 import sys
 import time
@@ -43,6 +44,20 @@ from typing import Dict, List, Optional, Tuple
 
 import paramiko
 import requests
+import yaml
+
+
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+_DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
+
+
+def load_config(path: str) -> Dict[str, Any]:
+    """Load token / device_id from a YAML config file. Returns {} on missing file."""
+    if not os.path.isfile(path):
+        return {}
+    with open(path, encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    return data if isinstance(data, dict) else {}
 
 
 END_MARKER = "** end"
@@ -122,6 +137,34 @@ def color_for_level(level: str) -> str:
 
 
 RESET = "\x1b[0m"
+SEPARATOR_CHAR = "━"
+SEPARATOR_COLOR = "\x1b[90m"  # gray
+
+
+def check_keypress() -> bool:
+    """Return True (consuming the keypress) if a key has been pressed since last check."""
+    if os.name == "nt":
+        import msvcrt  # pylint: disable=import-outside-toplevel
+        if msvcrt.kbhit():
+            msvcrt.getch()  # consume the key
+            return True
+        return False
+    # Unix / Git Bash fallback: non-blocking read on stdin
+    if sys.stdin.isatty():
+        rlist, _, _ = select.select([sys.stdin], [], [], 0)
+        if rlist:
+            sys.stdin.read(1)  # consume
+            return True
+    return False
+
+
+def print_separator(width: int, use_color: bool, char: str = SEPARATOR_CHAR) -> None:
+    """Print a full-width line of repeating characters as a visual separator."""
+    line = char * width
+    if use_color:
+        print(f"{SEPARATOR_COLOR}{line}{RESET}", flush=True)
+    else:
+        print(line, flush=True)
 
 
 def ellipsize(s: str, width: int) -> str:
@@ -342,7 +385,9 @@ def main() -> int:
 
     # ---- cloud subcommand ----
     ap_cloud = sub.add_parser("cloud", help="Monitor via Webex Cloud xAPI (polling)")
-    ap_cloud.add_argument("--device-id", required=True, help="Webex deviceId of the codec")
+    ap_cloud.add_argument("--config", default=_DEFAULT_CONFIG,
+                          help="Path to YAML config file with token/device_id (default: config.yaml beside script)")
+    ap_cloud.add_argument("--device-id", help="Webex deviceId of the codec")
     ap_cloud.add_argument("--token", help="Webex access token (omit to prompt)")
     ap_cloud.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
     ap_cloud.add_argument("--timeout", type=int, default=15, help="HTTP timeout seconds (default: 15)")
@@ -359,6 +404,8 @@ def main() -> int:
                        help="Show historical macro log at startup before monitoring")
         p.add_argument("--resize-interval", type=float, default=1.0,
                        help="How often to re-check terminal width in seconds (default: 1.0)")
+        p.add_argument("--separator-char", default=SEPARATOR_CHAR,
+                       help=f"Character for keypress separator line (default: {SEPARATOR_CHAR})")
 
     args = ap.parse_args()
 
@@ -423,19 +470,26 @@ def main() -> int:
         print(header)
         print("-" * min(len(header), term_cols))
 
+    sep_char = args.separator_char
+
     print_header()
 
     # =================================================================
     # Cloud polling mode
     # =================================================================
     if args.mode == "cloud":
-        token = args.token or getpass.getpass("Webex Access Token: ")
+        cfg = load_config(args.config)
+        token = args.token or cfg.get("token") or getpass.getpass("Webex Access Token: ")
+        device_id = args.device_id or cfg.get("device_id")
+        if not device_id:
+            print("ERROR: --device-id is required (via CLI or config.yaml)", file=sys.stderr)
+            return 2
 
         seen: set[Tuple[str, str, str, str]] = set()
 
         # Initial fetch
         try:
-            events = cloud_fetch_log(args.device_id, token, args.base_url, args.timeout)
+            events = cloud_fetch_log(device_id, token, args.base_url, args.timeout)
         except Exception as e:
             print(f"ERROR: {e}", file=sys.stderr)
             return 1
@@ -450,23 +504,35 @@ def main() -> int:
             print(f"{'─' * min(term_cols, 40)}  (polling every {args.poll_interval:.0f}s)", flush=True)
 
         # Poll loop
+        separator_pending = False
         try:
             while True:
                 time.sleep(args.poll_interval)
                 check_resize()
 
+                if check_keypress():
+                    separator_pending = True
+
                 try:
-                    events = cloud_fetch_log(args.device_id, token, args.base_url, args.timeout)
+                    events = cloud_fetch_log(device_id, token, args.base_url, args.timeout)
                 except Exception as e:
                     print(f"\x1b[90m[{datetime.now().strftime('%H:%M:%S')}] Poll error: {e}\x1b[0m",
                           file=sys.stderr, flush=True)
                     continue
 
+                new_events = []
                 for evt in events:
                     key = (evt.timestamp, evt.level, evt.macro, evt.message)
                     if key not in seen:
                         seen.add(key)
-                        print(make_row(evt), flush=True)
+                        new_events.append(evt)
+
+                if new_events and separator_pending:
+                    print_separator(term_cols, not args.no_color, sep_char)
+                    separator_pending = False
+
+                for evt in new_events:
+                    print(make_row(evt), flush=True)
         except KeyboardInterrupt:
             print("\nStopping…", file=sys.stderr)
             return 0
@@ -545,12 +611,16 @@ def main() -> int:
             kv: Dict[str, str] = {}
             status_kv: Dict[str, str] = {}
             last_size_check = 0.0
+            separator_pending = False
 
             while True:
                 now = time.time()
                 if now - last_size_check >= args.resize_interval:
                     last_size_check = now
                     check_resize()
+
+                if check_keypress():
+                    separator_pending = True
 
                 if not transport.is_active() or chan.closed:
                     print(f"\n\x1b[90m[{datetime.now().strftime('%H:%M:%S')}] Connection lost.\x1b[0m",
@@ -575,6 +645,9 @@ def main() -> int:
                             if kv:
                                 evt = MacroLogEvent.from_kv(kv)
                                 kv = {}
+                                if separator_pending:
+                                    print_separator(term_cols, not args.no_color, sep_char)
+                                    separator_pending = False
                                 print(make_row(evt), flush=True)
                             elif status_kv:
                                 ts = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -586,6 +659,9 @@ def main() -> int:
                                         macro="Peripheral",
                                         message=f"{path}: {clean_val}",
                                     )
+                                    if separator_pending:
+                                        print_separator(term_cols, not args.no_color, sep_char)
+                                        separator_pending = False
                                     print(make_row(evt), flush=True)
                                 status_kv = {}
                             continue

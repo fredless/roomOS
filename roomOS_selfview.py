@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """
-roomos_message_send.py
+roomos_selfview.py
 
-Send a macro bus message:
-  xCommand Message Send Text: "..." [Key: "..." Value: "..."]...
+Control the camera self-view on a Cisco RoomOS codec.
 
-Triggers Event/Message/Send on the codec (macros can subscribe via xFeedback register Event/Message/Send).
+Actions:
+  on-fullscreen  - show self-view in full-screen mode
+  on-thumbnail   - show self-view as a PiP thumbnail
+  off            - hide self-view
+
+xCommand reference:
+  xCommand Video Selfview Set Mode: On FullscreenMode: On
+  xCommand Video Selfview Set Mode: On FullscreenMode: Off
+  xCommand Video Selfview Set Mode: Off
 
 Modes:
   local  - SSH into device and run xCommand
-  cloud  - Webex Cloud xAPI REST: POST /v1/xapi/command/Message.Send
+  cloud  - Webex Cloud xAPI REST
 
 Deps:
-  pip install paramiko requests
+  pip install paramiko requests pyyaml
 """
 
 from __future__ import annotations
@@ -21,20 +28,21 @@ import argparse
 import getpass
 import json
 import os
-import re
 import sys
 import time
-from typing import Dict, Optional, Any, List, Tuple
+from typing import Any, Dict, Optional
 
 import paramiko
 import requests
 import yaml
 
-KV_RE = re.compile(r"^(?P<k>[^=]+)=(?P<v>.*)$")
-
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
 
+
+# ------------------------------------------------------------------
+# Config helpers
+# ------------------------------------------------------------------
 
 def load_config(path: str) -> Dict[str, Any]:
     """Load token / device_id from a YAML config file. Returns {} on missing file."""
@@ -45,35 +53,22 @@ def load_config(path: str) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def parse_kv(items: List[str]) -> List[Tuple[str, str]]:
-    out: List[Tuple[str, str]] = []
-    for item in items:
-        m = KV_RE.match(item)
-        if not m:
-            raise ValueError(f"Invalid --kv '{item}'. Expected key=value.")
-        k = m.group("k").strip()
-        v = m.group("v").strip()
-        if not k:
-            raise ValueError(f"Invalid --kv '{item}': empty key.")
-        out.append((k, v))
-    return out
+# ------------------------------------------------------------------
+# xCommand builders (local SSH)
+# ------------------------------------------------------------------
+
+def build_selfview_xcommand(action: str) -> str:
+    if action == "on-fullscreen":
+        return "xCommand Video Selfview Set Mode: On FullscreenMode: On"
+    elif action == "on-thumbnail":
+        return "xCommand Video Selfview Set Mode: On FullscreenMode: Off"
+    else:  # off
+        return "xCommand Video Selfview Set Mode: Off"
 
 
-def _xquote(s: str) -> str:
-    s = s.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{s}"'
-
-
-def build_message_send_xcommand(text: str, kv_pairs: List[Tuple[str, str]]) -> str:
-    parts = ["xCommand", "Message", "Send", "Text:", _xquote(text)]
-    for k, v in kv_pairs:
-        parts += ["Key:", _xquote(k), "Value:", _xquote(v)]
-    return " ".join(parts)
-
-
-# -------------------------
+# ------------------------------------------------------------------
 # Local mode: SSH xAPI
-# -------------------------
+# ------------------------------------------------------------------
 
 def connect_ssh(host: str, port: int, username: str, password: Optional[str],
                 key_path: Optional[str], timeout: int) -> paramiko.SSHClient:
@@ -151,54 +146,46 @@ def ssh_run_xcommand(host: str, port: int, username: str, password: Optional[str
         client.close()
 
 
-# -------------------------
+# ------------------------------------------------------------------
 # Cloud mode: Webex xAPI REST
-# -------------------------
+# ------------------------------------------------------------------
 
-def cloud_message_send(device_id: str, token: str, text: str, kv_pairs: List[Tuple[str, str]],
-                       base_url: str, timeout: int) -> Dict[str, Any]:
-    """
-    POST https://webexapis.com/v1/xapi/command/Message.Send
-    {
-      "deviceId": "...",
-      "arguments": {
-        "Text": "...",
-        "Key": ["k1","k2"],
-        "Value": ["v1","v2"]
-      }
-    }
-    """
-    url = f"{base_url.rstrip('/')}/v1/xapi/command/Message.Send"
+def cloud_selfview(device_id: str, token: str, action: str,
+                   base_url: str, timeout: int) -> Dict[str, Any]:
+    url = f"{base_url.rstrip('/')}/v1/xapi/command/Video.Selfview.Set"
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
         "Accept": "application/json",
     }
 
-    arguments: Dict[str, Any] = {"Text": text}
-    if kv_pairs:
-        # Mapping repeated Key/Value pairs into arrays is the cleanest REST representation.
-        arguments["Key"] = [k for k, _ in kv_pairs]
-        arguments["Value"] = [v for _, v in kv_pairs]
+    if action == "on-fullscreen":
+        arguments = {"Mode": "On", "FullscreenMode": "On"}
+    elif action == "on-thumbnail":
+        arguments = {"Mode": "On", "FullscreenMode": "Off"}
+    else:  # off
+        arguments = {"Mode": "Off"}
 
-    payload = {"deviceId": device_id, "arguments": arguments}
-
+    payload: Dict[str, Any] = {"deviceId": device_id, "arguments": arguments}
     resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
     if not resp.ok:
         raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-
     return resp.json() if resp.text.strip() else {"status": "ok"}
 
 
-# -------------------------
+# ------------------------------------------------------------------
 # CLI
-# -------------------------
+# ------------------------------------------------------------------
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Send RoomOS macro bus messages (xCommand Message Send).")
+    ap = argparse.ArgumentParser(
+        description="Control camera self-view on a RoomOS codec "
+                    "via local SSH or Webex Cloud xAPI.",
+    )
     sub = ap.add_subparsers(dest="mode", required=True)
 
-    ap_local = sub.add_parser("local", help="Send via local SSH xAPI")
+    # ---- local subparser ----
+    ap_local = sub.add_parser("local", help="Control self-view via local SSH xAPI")
     ap_local.add_argument("--host", required=True, help="Codec IP/hostname")
     ap_local.add_argument("-P", "--port", type=int, default=22, help="SSH port (default: 22)")
     ap_local.add_argument("-u", "--username", required=True, help="SSH username")
@@ -206,7 +193,8 @@ def main() -> int:
     ap_local.add_argument("-k", "--key", dest="key_path", help="SSH private key path (optional)")
     ap_local.add_argument("--timeout", type=int, default=10, help="SSH timeout seconds (default: 10)")
 
-    ap_cloud = sub.add_parser("cloud", help="Send via Webex Cloud xAPI REST")
+    # ---- cloud subparser ----
+    ap_cloud = sub.add_parser("cloud", help="Control self-view via Webex Cloud xAPI REST")
     ap_cloud.add_argument("--config", default=_DEFAULT_CONFIG,
                           help="Path to YAML config file with token/device_id (default: config.yaml beside script)")
     ap_cloud.add_argument("--device-id", help="Webex deviceId of the codec")
@@ -214,19 +202,20 @@ def main() -> int:
     ap_cloud.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
     ap_cloud.add_argument("--timeout", type=int, default=15, help="HTTP timeout seconds (default: 15)")
 
+    # ---- shared action argument ----
     for p in (ap_local, ap_cloud):
-        p.add_argument("--text", required=True, help="Message text (Text: ...)")
-        p.add_argument("--kv", action="append", default=[], help="Optional key=value pair (repeatable)")
+        p.add_argument("action", choices=["on-fullscreen", "on-thumbnail", "off"],
+                       help="Self-view action: on-fullscreen, on-thumbnail, or off")
 
     args = ap.parse_args()
 
     try:
-        kv_pairs = parse_kv(args.kv)
-
+        # ---- Local mode ----
         if args.mode == "local":
             if not args.password and not args.key_path:
                 args.password = getpass.getpass("SSH Password: ")
-            cmd = build_message_send_xcommand(args.text, kv_pairs)
+
+            cmd = build_selfview_xcommand(args.action)
             out = ssh_run_xcommand(
                 host=args.host,
                 port=args.port,
@@ -240,6 +229,7 @@ def main() -> int:
                 print(out)
             return 0
 
+        # ---- Cloud mode ----
         if args.mode == "cloud":
             cfg = load_config(args.config)
             token = args.token or cfg.get("token") or getpass.getpass("Webex Access Token: ")
@@ -247,13 +237,11 @@ def main() -> int:
             if not device_id:
                 print("ERROR: --device-id is required (via CLI or config.yaml)", file=sys.stderr)
                 return 2
-            result = cloud_message_send(
-                device_id=device_id,
-                token=token,
-                text=args.text,
-                kv_pairs=kv_pairs,
-                base_url=args.base_url,
-                timeout=args.timeout,
+
+            result = cloud_selfview(
+                device_id=device_id, token=token,
+                action=args.action,
+                base_url=args.base_url, timeout=args.timeout,
             )
             print(json.dumps(result, indent=2))
             return 0
