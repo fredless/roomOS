@@ -1,4 +1,20 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Frederick W. Nielsen
+#
+# This file is part of roomOS.
+#
+# roomOS is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# roomOS is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with roomOS.  If not, see <https://www.gnu.org/licenses/>.
 """
 roomos_dial.py
 
@@ -94,6 +110,7 @@ def cloud_call_status(device_id: str, token: str, base_url: str,
 # -------------------------
 
 def main() -> int:
+    """place a call or show call status on a RoomOS codec (local SSH or cloud xAPI)"""
     ap = argparse.ArgumentParser(description="Place a call from a RoomOS codec (xCommand Dial) via local SSH or Webex Cloud xAPI.")
     sub = ap.add_subparsers(dest="mode", required=True)
 

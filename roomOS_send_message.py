@@ -1,4 +1,20 @@
 #!/usr/bin/env python3
+# Copyright (C) 2026 Frederick W. Nielsen
+#
+# This file is part of roomOS.
+#
+# roomOS is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# roomOS is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with roomOS.  If not, see <https://www.gnu.org/licenses/>.
 """
 roomos_message_send.py
 
@@ -54,6 +70,7 @@ def cloud_message_send(device_id: str, token: str, text: str, kv_pairs: List[Tup
 # -------------------------
 
 def main() -> int:
+    """send a macro bus message to a RoomOS codec (local SSH or cloud xAPI)"""
     ap = argparse.ArgumentParser(description="Send RoomOS macro bus messages (xCommand Message Send).")
     sub = ap.add_subparsers(dest="mode", required=True)
 
