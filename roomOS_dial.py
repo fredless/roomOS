@@ -127,11 +127,12 @@ def main() -> int:
     ap_cloud.add_argument("--token", help="Webex access token (omit to prompt)")
     ap_cloud.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
     ap_cloud.add_argument("--timeout", type=int, default=15, help="HTTP timeout seconds (default: 15)")
+    ap_cloud.add_argument("--json", action="store_true", help="Print the raw JSON response instead of a summary")
 
     for p in (ap_local, ap_cloud):
         p.add_argument("--number", help="Dial string / destination (SIP URI, number, etc.)")
-        p.add_argument("--arg", action="append", default=[],
-                       help="Optional Dial argument key=value (repeatable), e.g. --arg CallType=Video --arg Protocol=SIP")
+        p.add_argument("--kv", action="append", default=[],
+                       help="Optional Dial argument key=value (repeatable), e.g. --kv CallType=Video --kv Protocol=SIP")
         p.add_argument("--status", action="store_true",
                        help="Show current call status (xStatus Call) instead of dialing")
 
@@ -142,7 +143,7 @@ def main() -> int:
             print("ERROR: --number is required when not using --status", file=sys.stderr)
             return 2
 
-        dial_args = parse_kv(args.arg, "--arg")
+        dial_args = parse_kv(args.kv)
 
         if args.mode == "local":
             if not args.password and not args.key_path:
@@ -197,7 +198,10 @@ def main() -> int:
                     base_url=args.base_url,
                     timeout=args.timeout,
                 )
-            print(json.dumps(result, indent=2))
+            if args.json or args.status:
+                print(json.dumps(result, indent=2))
+            else:
+                print(f"Dialing {args.number}.")
             return 0
 
         return 2

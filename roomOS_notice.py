@@ -148,6 +148,7 @@ def main() -> int:
     ap_cloud.add_argument("--token", help="Webex access token (omit to prompt)")
     ap_cloud.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
     ap_cloud.add_argument("--timeout", type=int, default=15, help="HTTP timeout seconds (default: 15)")
+    ap_cloud.add_argument("--json", action="store_true", help="Print the raw JSON response instead of a summary")
 
     # ---- action subparsers shared across both modes ----
     for p in (ap_local, ap_cloud):
@@ -237,7 +238,10 @@ def main() -> int:
                         base_url=args.base_url, timeout=args.timeout,
                     )
 
-            print(json.dumps(result, indent=2))
+            if args.json:
+                print(json.dumps(result, indent=2))
+            else:
+                print(f"Notice {'displayed' if args.action == 'display' else 'cleared'}.")
             return 0
 
         return 2
