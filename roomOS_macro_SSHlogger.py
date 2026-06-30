@@ -40,24 +40,15 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 import paramiko
-import requests
-import yaml
+
+from roomos_common import connect_ssh, load_config, xapi_command
 
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
-
-
-def load_config(path: str) -> Dict[str, Any]:
-    """Load token / device_id from a YAML config file. Returns {} on missing file."""
-    if not os.path.isfile(path):
-        return {}
-    with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    return data if isinstance(data, dict) else {}
 
 
 END_MARKER = "** end"
@@ -257,19 +248,7 @@ def compute_widths(term_cols: int, show_ts: bool, show_level: bool, show_macro: 
 def cloud_fetch_log(device_id: str, token: str, base_url: str,
                     timeout: int) -> List[MacroLogEvent]:
     """POST /v1/xapi/command/Macros.Log.Get and parse result into MacroLogEvents."""
-    url = f"{base_url.rstrip('/')}/v1/xapi/command/Macros.Log.Get"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    payload = {"deviceId": device_id, "arguments": {}}
-
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-
-    data = resp.json() if resp.text.strip() else {}
+    data = xapi_command("Macros.Log.Get", device_id, token, {}, base_url, timeout)
     result = data.get("result", {})
 
     # Navigate into LogGetResult -> Line (may be a list of dicts or nested)
@@ -286,40 +265,6 @@ def cloud_fetch_log(device_id: str, token: str, base_url: str,
             events.append(MacroLogEvent.from_kv(entry))
 
     return events
-
-
-def connect_ssh(host: str, port: int, username: str,
-                password: Optional[str],
-                key_path: Optional[str],
-                timeout: int) -> paramiko.SSHClient:
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    pkey = None
-    if key_path:
-        last_exc: Optional[Exception] = None
-        for key_cls in (paramiko.RSAKey, paramiko.ECDSAKey, paramiko.Ed25519Key):
-            try:
-                pkey = key_cls.from_private_key_file(key_path)
-                break
-            except Exception as e:
-                last_exc = e
-        if pkey is None:
-            raise RuntimeError(f"Failed to load private key from {key_path}: {last_exc}")
-
-    client.connect(
-        hostname=host,
-        port=port,
-        username=username,
-        password=password if not pkey else None,
-        pkey=pkey,
-        look_for_keys=False,
-        allow_agent=False,
-        timeout=timeout,
-        banner_timeout=timeout,
-        auth_timeout=timeout,
-    )
-    return client
 
 
 def fetch_history(chan: paramiko.Channel, timeout: float = 10.0) -> List[MacroLogEvent]:

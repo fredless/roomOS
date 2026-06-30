@@ -25,12 +25,9 @@ import json
 import os
 import re
 import sys
-import time
 from typing import Any, Dict, List, Optional
 
-import paramiko
-import requests
-import yaml
+from roomos_common import load_config, ssh_run_xcommands, xapi_status
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
@@ -38,21 +35,6 @@ _DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
 # Matches xStatus response lines like:
 #   *s Peripherals ConnectedDevice 1 Name: "Cisco Table Microphone"
 STATUS_LINE_RE = re.compile(r"^\*s\s+(?P<path>.+?):\s+(?P<val>.*)\s*$")
-
-END_MARKER = "** end"
-
-
-# ------------------------------------------------------------------
-# Config helpers
-# ------------------------------------------------------------------
-
-def load_config(path: str) -> Dict[str, Any]:
-    """Load token / device_id from a YAML config file. Returns {} on missing file."""
-    if not os.path.isfile(path):
-        return {}
-    with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    return data if isinstance(data, dict) else {}
 
 
 def _clean_value(v: str) -> str:
@@ -64,95 +46,11 @@ def _clean_value(v: str) -> str:
 
 
 # ------------------------------------------------------------------
-# Local mode: SSH xAPI
-# ------------------------------------------------------------------
-
-def connect_ssh(host: str, port: int, username: str, password: Optional[str],
-                key_path: Optional[str], timeout: int) -> paramiko.SSHClient:
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    pkey = None
-    if key_path:
-        last_exc: Optional[Exception] = None
-        for key_cls in (paramiko.RSAKey, paramiko.ECDSAKey, paramiko.Ed25519Key):
-            try:
-                pkey = key_cls.from_private_key_file(key_path)
-                break
-            except Exception as e:
-                last_exc = e
-        if pkey is None:
-            raise RuntimeError(f"Failed to load private key from {key_path}: {last_exc}")
-
-    client.connect(
-        hostname=host,
-        port=port,
-        username=username,
-        password=password if not pkey else None,
-        pkey=pkey,
-        look_for_keys=False,
-        allow_agent=False,
-        timeout=timeout,
-        banner_timeout=timeout,
-        auth_timeout=timeout,
-    )
-    return client
-
-
-def drain(chan, max_reads: int = 50) -> str:
-    chunks = []
-    reads = 0
-    while reads < max_reads and chan.recv_ready():
-        data = chan.recv(65535)
-        if not data:
-            break
-        chunks.append(data.decode("utf-8", errors="replace"))
-        reads += 1
-    return "".join(chunks)
-
-
-def ssh_run_xstatus(host: str, port: int, username: str, password: Optional[str],
-                    key_path: Optional[str], commands: List[str],
-                    timeout: int) -> str:
-    """Run one or more xStatus commands over a single SSH session and return combined output."""
-    client = connect_ssh(host, port, username, password, key_path, timeout)
-    try:
-        transport = client.get_transport()
-        if transport is None:
-            raise RuntimeError("SSH transport unavailable")
-
-        chan = transport.open_session()
-        chan.get_pty()
-        chan.invoke_shell()
-
-        time.sleep(0.2)
-        _ = drain(chan)  # banners/prompts
-
-        out = ""
-        for cmd in commands:
-            chan.send(cmd.strip() + "\n")
-            time.sleep(0.3)
-            out += drain(chan)
-            time.sleep(0.2)
-            out += drain(chan)
-
-        try:
-            chan.send("exit\n")
-        except Exception:
-            pass
-
-        return out.strip()
-    finally:
-        client.close()
-
-
-# ------------------------------------------------------------------
 # Parsing xStatus output (local mode)
 # ------------------------------------------------------------------
 
 def parse_peripherals(raw: str) -> List[Dict[str, str]]:
     """Parse *s Peripherals ConnectedDevice lines into a list of device dicts."""
-    # Group by device index: Peripherals ConnectedDevice <N> <Property>
     device_re = re.compile(
         r"^Peripherals\s+ConnectedDevice\s+(?P<idx>\d+)\s+(?P<prop>.+)$"
     )
@@ -214,23 +112,13 @@ def parse_ethernet_inputs(raw: str) -> List[Dict[str, str]]:
 def cloud_get_status(device_id: str, token: str, name: str,
                      base_url: str, timeout: int) -> Dict[str, Any]:
     """GET /v1/xapi/status?deviceId=...&name=..."""
-    url = f"{base_url.rstrip('/')}/v1/xapi/status"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-    }
-    params = {"deviceId": device_id, "name": name}
-    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-    return resp.json() if resp.text.strip() else {}
+    return xapi_status(name, device_id, token, base_url, timeout)
 
 
 def extract_cloud_peripherals(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Extract microphone peripherals from cloud status response."""
     result = data.get("result", data)
 
-    # Navigate into Peripherals -> ConnectedDevice
     peripherals = result.get("Peripherals", result)
     devices_raw = peripherals.get("ConnectedDevice", [])
 
@@ -283,7 +171,6 @@ def print_table(title: str, items: List[Dict[str, Any]], key_order: Optional[Lis
         for k in keys:
             if k in item:
                 print(f"    {k}: {item[k]}")
-        # Print remaining keys not in key_order
         if key_order:
             for k in sorted(item.keys()):
                 if k not in key_order:
@@ -331,7 +218,7 @@ def main() -> int:
             if not args.password and not args.key_path:
                 args.password = getpass.getpass("SSH Password: ")
 
-            raw = ssh_run_xstatus(
+            raw = ssh_run_xcommands(
                 host=args.host, port=args.port,
                 username=args.username, password=args.password,
                 key_path=args.key_path,

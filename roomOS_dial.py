@@ -17,7 +17,7 @@ Status (--status):
   Cloud:  GET https://webexapis.com/v1/xapi/status?name=Call
 
 Deps:
-  pip install paramiko requests
+  pip install paramiko requests pyyaml
 """
 
 from __future__ import annotations
@@ -28,132 +28,17 @@ import json
 import os
 import re
 import sys
-import time
-from typing import Dict, Optional, Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
-import paramiko
-import requests
-import yaml
-
-KV_RE = re.compile(r"^(?P<k>[^=]+)=(?P<v>.*)$")
+from roomos_common import (load_config, parse_kv, ssh_run_xcommand, xapi_command,
+                           xapi_status, xquote as _xquote)
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
 
 
-def load_config(path: str) -> Dict[str, Any]:
-    """Load token / device_id from a YAML config file. Returns {} on missing file."""
-    if not os.path.isfile(path):
-        return {}
-    with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    return data if isinstance(data, dict) else {}
-
-
-def parse_kv(items: List[str]) -> List[Tuple[str, str]]:
-    out: List[Tuple[str, str]] = []
-    for item in items:
-        m = KV_RE.match(item)
-        if not m:
-            raise ValueError(f"Invalid --arg '{item}'. Expected key=value.")
-        k = m.group("k").strip()
-        v = m.group("v").strip()
-        if not k:
-            raise ValueError(f"Invalid --arg '{item}': empty key.")
-        out.append((k, v))
-    return out
-
-
-def _xquote(s: str) -> str:
-    s = s.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{s}"'
-
-
-# -------------------------
-# Local mode: SSH xAPI
-# -------------------------
-
-def connect_ssh(host: str, port: int, username: str, password: Optional[str],
-                key_path: Optional[str], timeout: int) -> paramiko.SSHClient:
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    pkey = None
-    if key_path:
-        last_exc: Optional[Exception] = None
-        for key_cls in (paramiko.RSAKey, paramiko.ECDSAKey, paramiko.Ed25519Key):
-            try:
-                pkey = key_cls.from_private_key_file(key_path)
-                break
-            except Exception as e:
-                last_exc = e
-        if pkey is None:
-            raise RuntimeError(f"Failed to load private key from {key_path}: {last_exc}")
-
-    client.connect(
-        hostname=host,
-        port=port,
-        username=username,
-        password=password if not pkey else None,
-        pkey=pkey,
-        look_for_keys=False,
-        allow_agent=False,
-        timeout=timeout,
-        banner_timeout=timeout,
-        auth_timeout=timeout,
-    )
-    return client
-
-
-def drain(chan, max_reads: int = 50) -> str:
-    chunks = []
-    reads = 0
-    while reads < max_reads and chan.recv_ready():
-        data = chan.recv(65535)
-        if not data:
-            break
-        chunks.append(data.decode("utf-8", errors="replace"))
-        reads += 1
-    return "".join(chunks)
-
-
-def ssh_run_xcommand(host: str, port: int, username: str, password: Optional[str],
-                     key_path: Optional[str], xcommand: str, timeout: int) -> str:
-    client = connect_ssh(host, port, username, password, key_path, timeout)
-    try:
-        transport = client.get_transport()
-        if transport is None:
-            raise RuntimeError("SSH transport unavailable")
-
-        chan = transport.open_session()
-        chan.get_pty()
-        chan.invoke_shell()
-
-        time.sleep(0.2)
-        _ = drain(chan)  # banners/prompts
-
-        chan.send(xcommand.strip() + "\n")
-        time.sleep(0.2)
-        out = drain(chan)
-
-        # Some devices flush slightly later
-        time.sleep(0.2)
-        out += drain(chan)
-
-        try:
-            chan.send("exit\n")
-        except Exception:
-            pass
-
-        return out.strip()
-    finally:
-        client.close()
-
-
 def build_dial_xcommand(number: str, args: List[Tuple[str, str]]) -> str:
-    """
-    Build: xCommand Dial Number: "<number>" <Arg1>: "<Val1>" ...
-    """
+    """Build: xCommand Dial Number: "<number>" <Arg1>: "<Val1>" ..."""
     parts = ["xCommand", "Dial", "Number:", _xquote(number)]
     for k, v in args:
         # treat numeric values as-is if they look numeric, else quote
@@ -178,20 +63,7 @@ def _looks_number(v: str) -> bool:
 
 def cloud_dial(device_id: str, token: str, number: str, args: List[Tuple[str, str]],
                base_url: str, timeout: int) -> Dict[str, Any]:
-    """
-    POST https://webexapis.com/v1/xapi/command/Dial
-    {
-      "deviceId": "...",
-      "arguments": { "Number": "...", ... }
-    }
-    """
-    url = f"{base_url.rstrip('/')}/v1/xapi/command/Dial"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
+    """POST /v1/xapi/command/Dial with Number plus coerced extra arguments."""
     arguments: Dict[str, Any] = {"Number": number}
     for k, v in args:
         # Simple coercion: booleans, ints, floats, else string
@@ -201,7 +73,6 @@ def cloud_dial(device_id: str, token: str, number: str, args: List[Tuple[str, st
         elif lv == "false":
             arguments[k] = False
         else:
-            # int?
             try:
                 if re.fullmatch(r"-?\d+", v):
                     arguments[k] = int(v)
@@ -212,30 +83,14 @@ def cloud_dial(device_id: str, token: str, number: str, args: List[Tuple[str, st
             except Exception:
                 arguments[k] = v
 
-    payload = {"deviceId": device_id, "arguments": arguments}
-
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-
-    return resp.json() if resp.text.strip() else {"status": "ok"}
+    return xapi_command("Dial", device_id, token, arguments, base_url, timeout)
 
 
 def cloud_call_status(device_id: str, token: str, base_url: str,
                       timeout: int) -> Dict[str, Any]:
-    """GET https://webexapis.com/v1/xapi/status?deviceId=...&name=Call[*].*"""
-    url = f"{base_url.rstrip('/')}/v1/xapi/status"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-    }
-    params = {"deviceId": device_id, "name": "Call[*].*"}
-
-    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-
-    return resp.json() if resp.text.strip() else {"status": "no active calls"}
+    """GET /v1/xapi/status?deviceId=...&name=Call[*].*"""
+    return xapi_status("Call[*].*", device_id, token, base_url, timeout,
+                       empty_default={"status": "no active calls"})
 
 
 # -------------------------
@@ -276,7 +131,7 @@ def main() -> int:
             print("ERROR: --number is required when not using --status", file=sys.stderr)
             return 2
 
-        dial_args = parse_kv(args.arg)
+        dial_args = parse_kv(args.arg, "--arg")
 
         if args.mode == "local":
             if not args.password and not args.key_path:

@@ -28,13 +28,11 @@ import os
 import re
 import subprocess
 import sys
-import time
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
 
-import paramiko
 import requests
-import yaml
+
+from roomos_common import load_config, ssh_run_xcommands, xapi_command
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
@@ -45,103 +43,19 @@ STATUS_LINE_RE = re.compile(r"^\*s\s+(?P<path>.+?):\s+(?P<val>.*)\s*$")
 
 
 # ------------------------------------------------------------------
-# Config helpers
-# ------------------------------------------------------------------
-
-def load_config(path: str) -> Dict[str, Any]:
-    """Load token / device_id from a YAML config file. Returns {} on missing file."""
-    if not os.path.isfile(path):
-        return {}
-    with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    return data if isinstance(data, dict) else {}
-
-
-# ------------------------------------------------------------------
 # Local mode: SSH xAPI
 # ------------------------------------------------------------------
 
-def connect_ssh(host: str, port: int, username: str, password: Optional[str],
-                key_path: Optional[str], timeout: int) -> paramiko.SSHClient:
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    pkey = None
-    if key_path:
-        last_exc: Optional[Exception] = None
-        for key_cls in (paramiko.RSAKey, paramiko.ECDSAKey, paramiko.Ed25519Key):
-            try:
-                pkey = key_cls.from_private_key_file(key_path)
-                break
-            except Exception as e:
-                last_exc = e
-        if pkey is None:
-            raise RuntimeError(f"Failed to load private key from {key_path}: {last_exc}")
-
-    client.connect(
-        hostname=host,
-        port=port,
-        username=username,
-        password=password if not pkey else None,
-        pkey=pkey,
-        look_for_keys=False,
-        allow_agent=False,
-        timeout=timeout,
-        banner_timeout=timeout,
-        auth_timeout=timeout,
-    )
-    return client
-
-
-def drain(chan, max_reads: int = 50) -> str:
-    chunks = []
-    reads = 0
-    while reads < max_reads and chan.recv_ready():
-        data = chan.recv(65535)
-        if not data:
-            break
-        chunks.append(data.decode("utf-8", errors="replace"))
-        reads += 1
-    return "".join(chunks)
-
-
-def ssh_get_codec_time(host: str, port: int, username: str, password: Optional[str],
-                       key_path: Optional[str], timeout: int) -> str:
+def ssh_get_codec_time(host: str, port: int, username: str, password,
+                       key_path, timeout: int) -> str:
     """Query xStatus Time DateTime over SSH and return the raw datetime string."""
-    client = connect_ssh(host, port, username, password, key_path, timeout)
-    try:
-        transport = client.get_transport()
-        if transport is None:
-            raise RuntimeError("SSH transport unavailable")
-
-        chan = transport.open_session()
-        chan.get_pty()
-        chan.invoke_shell()
-
-        time.sleep(0.2)
-        _ = drain(chan)  # banners/prompts
-
-        chan.send("xStatus Time DateTime\n")
-        time.sleep(0.3)
-        out = drain(chan)
-        time.sleep(0.2)
-        out += drain(chan)
-
-        try:
-            chan.send("exit\n")
-        except Exception:
-            pass
-
-        # Parse the *s Time DateTime line
-        for line in out.splitlines():
-            m = STATUS_LINE_RE.match(line)
-            if m and "Time" in m.group("path") and "DateTime" in m.group("path"):
-                val = m.group("val").strip().strip('"')
-                return val
-
-        raise RuntimeError(f"Could not parse codec time from response:\n{out}")
-    finally:
-        client.close()
+    out = ssh_run_xcommands(host, port, username, password, key_path,
+                            ["xStatus Time DateTime"], timeout)
+    for line in out.splitlines():
+        m = STATUS_LINE_RE.match(line)
+        if m and "Time" in m.group("path") and "DateTime" in m.group("path"):
+            return m.group("val").strip().strip('"')
+    raise RuntimeError(f"Could not parse codec time from response:\n{out}")
 
 
 # ------------------------------------------------------------------
@@ -150,7 +64,10 @@ def ssh_get_codec_time(host: str, port: int, username: str, password: Optional[s
 
 def cloud_get_timezone(device_id: str, token: str, base_url: str,
                        timeout: int) -> str:
-    """GET device configuration Time.Zone via Webex Device Configurations API."""
+    """GET device configuration Time.Zone via the Webex Device Configurations API.
+
+    Not an xAPI command/status call, so this uses the deviceConfigurations endpoint directly.
+    """
     url = f"{base_url.rstrip('/')}/v1/deviceConfigurations"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -179,7 +96,6 @@ def cloud_get_timezone(device_id: str, token: str, base_url: str,
 def cloud_get_codec_time(device_id: str, token: str, base_url: str,
                          timeout: int) -> str:
     """Query codec local time and timezone, return UTC datetime string."""
-    # Get the codec's configured timezone
     try:
         import zoneinfo
     except ImportError:
@@ -187,19 +103,7 @@ def cloud_get_codec_time(device_id: str, token: str, base_url: str,
 
     tz_name = cloud_get_timezone(device_id, token, base_url, timeout)
 
-    # Get the codec's local time
-    url = f"{base_url.rstrip('/')}/v1/xapi/command/Time.DateTime.Get"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    payload = {"deviceId": device_id}
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-
-    data = resp.json() if resp.text.strip() else {}
+    data = xapi_command("Time.DateTime.Get", device_id, token, {}, base_url, timeout)
     result = data.get("result", data)
 
     if "Year" not in result:
@@ -231,11 +135,8 @@ def cloud_get_codec_time(device_id: str, token: str, base_url: str,
 
 def parse_codec_time(dt_str: str) -> datetime:
     """Parse a RoomOS datetime string into a timezone-aware UTC datetime."""
-    # RoomOS returns ISO 8601: "2026-03-05T14:30:45Z" or "2026-03-05T14:30:45.123Z"
-    # Also handle "+00:00" suffix
     dt_str = dt_str.strip()
 
-    # Try common formats
     for fmt in (
         "%Y-%m-%dT%H:%M:%SZ",
         "%Y-%m-%dT%H:%M:%S.%fZ",

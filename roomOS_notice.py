@@ -27,33 +27,12 @@ import getpass
 import json
 import os
 import sys
-import time
 from typing import Any, Dict, Optional
 
-import paramiko
-import requests
-import yaml
+from roomos_common import load_config, ssh_run_xcommand, xapi_command, xquote as _xquote
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
-
-
-# ------------------------------------------------------------------
-# Config helpers
-# ------------------------------------------------------------------
-
-def load_config(path: str) -> Dict[str, Any]:
-    """Load token / device_id from a YAML config file. Returns {} on missing file."""
-    if not os.path.isfile(path):
-        return {}
-    with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    return data if isinstance(data, dict) else {}
-
-
-def _xquote(s: str) -> str:
-    s = s.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{s}"'
 
 
 # ------------------------------------------------------------------
@@ -95,156 +74,38 @@ def build_textline_clear_xcommand() -> str:
 
 
 # ------------------------------------------------------------------
-# Local mode: SSH xAPI
-# ------------------------------------------------------------------
-
-def connect_ssh(host: str, port: int, username: str, password: Optional[str],
-                key_path: Optional[str], timeout: int) -> paramiko.SSHClient:
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    pkey = None
-    if key_path:
-        last_exc: Optional[Exception] = None
-        for key_cls in (paramiko.RSAKey, paramiko.ECDSAKey, paramiko.Ed25519Key):
-            try:
-                pkey = key_cls.from_private_key_file(key_path)
-                break
-            except Exception as e:
-                last_exc = e
-        if pkey is None:
-            raise RuntimeError(f"Failed to load private key from {key_path}: {last_exc}")
-
-    client.connect(
-        hostname=host,
-        port=port,
-        username=username,
-        password=password if not pkey else None,
-        pkey=pkey,
-        look_for_keys=False,
-        allow_agent=False,
-        timeout=timeout,
-        banner_timeout=timeout,
-        auth_timeout=timeout,
-    )
-    return client
-
-
-def drain(chan, max_reads: int = 50) -> str:
-    chunks = []
-    reads = 0
-    while reads < max_reads and chan.recv_ready():
-        data = chan.recv(65535)
-        if not data:
-            break
-        chunks.append(data.decode("utf-8", errors="replace"))
-        reads += 1
-    return "".join(chunks)
-
-
-def ssh_run_xcommand(host: str, port: int, username: str, password: Optional[str],
-                     key_path: Optional[str], xcommand: str, timeout: int) -> str:
-    client = connect_ssh(host, port, username, password, key_path, timeout)
-    try:
-        transport = client.get_transport()
-        if transport is None:
-            raise RuntimeError("SSH transport unavailable")
-
-        chan = transport.open_session()
-        chan.get_pty()
-        chan.invoke_shell()
-
-        time.sleep(0.2)
-        _ = drain(chan)  # banners/prompts
-
-        chan.send(xcommand.strip() + "\n")
-        time.sleep(0.15)
-        out = drain(chan)
-
-        time.sleep(0.15)
-        out += drain(chan)
-
-        try:
-            chan.send("exit\n")
-        except Exception:
-            pass
-
-        return out.strip()
-    finally:
-        client.close()
-
-
-# ------------------------------------------------------------------
 # Cloud mode: Webex xAPI REST
 # ------------------------------------------------------------------
 
 def cloud_alert_display(device_id: str, token: str, title: str, text: str,
                         duration: int, base_url: str, timeout: int) -> Dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/v1/xapi/command/UserInterface.Message.Alert.Display"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    payload = {
-        "deviceId": device_id,
-        "arguments": {"Title": title, "Text": text, "Duration": duration},
-    }
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-    return resp.json() if resp.text.strip() else {"status": "ok"}
+    return xapi_command("UserInterface.Message.Alert.Display", device_id, token,
+                        {"Title": title, "Text": text, "Duration": duration},
+                        base_url, timeout)
 
 
 def cloud_alert_clear(device_id: str, token: str, base_url: str,
                       timeout: int) -> Dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/v1/xapi/command/UserInterface.Message.Alert.Clear"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    payload = {"deviceId": device_id}
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-    return resp.json() if resp.text.strip() else {"status": "ok"}
+    return xapi_command("UserInterface.Message.Alert.Clear", device_id, token, {},
+                        base_url, timeout)
 
 
 def cloud_textline_display(device_id: str, token: str, text: str, duration: int,
                            x: Optional[int], y: Optional[int],
                            base_url: str, timeout: int) -> Dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/v1/xapi/command/UserInterface.Message.TextLine.Display"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
     arguments: Dict[str, Any] = {"Text": text, "Duration": duration}
     if x is not None:
         arguments["X"] = x
     if y is not None:
         arguments["Y"] = y
-    payload = {"deviceId": device_id, "arguments": arguments}
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-    return resp.json() if resp.text.strip() else {"status": "ok"}
+    return xapi_command("UserInterface.Message.TextLine.Display", device_id, token,
+                        arguments, base_url, timeout)
 
 
 def cloud_textline_clear(device_id: str, token: str, base_url: str,
                          timeout: int) -> Dict[str, Any]:
-    url = f"{base_url.rstrip('/')}/v1/xapi/command/UserInterface.Message.TextLine.Clear"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    payload = {"deviceId": device_id}
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-    return resp.json() if resp.text.strip() else {"status": "ok"}
+    return xapi_command("UserInterface.Message.TextLine.Clear", device_id, token, {},
+                        base_url, timeout)
 
 
 # ------------------------------------------------------------------

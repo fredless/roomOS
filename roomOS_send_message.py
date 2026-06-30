@@ -12,7 +12,7 @@ Modes:
   cloud  - Webex Cloud xAPI REST: POST /v1/xapi/command/Message.Send
 
 Deps:
-  pip install paramiko requests
+  pip install paramiko requests pyyaml
 """
 
 from __future__ import annotations
@@ -21,47 +21,14 @@ import argparse
 import getpass
 import json
 import os
-import re
 import sys
-import time
-from typing import Dict, Optional, Any, List, Tuple
+from typing import Any, Dict, List, Tuple
 
-import paramiko
-import requests
-import yaml
-
-KV_RE = re.compile(r"^(?P<k>[^=]+)=(?P<v>.*)$")
+from roomos_common import (load_config, parse_kv, ssh_run_xcommand, xapi_command,
+                           xquote as _xquote)
 
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
-
-
-def load_config(path: str) -> Dict[str, Any]:
-    """Load token / device_id from a YAML config file. Returns {} on missing file."""
-    if not os.path.isfile(path):
-        return {}
-    with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
-    return data if isinstance(data, dict) else {}
-
-
-def parse_kv(items: List[str]) -> List[Tuple[str, str]]:
-    out: List[Tuple[str, str]] = []
-    for item in items:
-        m = KV_RE.match(item)
-        if not m:
-            raise ValueError(f"Invalid --kv '{item}'. Expected key=value.")
-        k = m.group("k").strip()
-        v = m.group("v").strip()
-        if not k:
-            raise ValueError(f"Invalid --kv '{item}': empty key.")
-        out.append((k, v))
-    return out
-
-
-def _xquote(s: str) -> str:
-    s = s.replace("\\", "\\\\").replace('"', '\\"')
-    return f'"{s}"'
 
 
 def build_message_send_xcommand(text: str, kv_pairs: List[Tuple[str, str]]) -> str:
@@ -72,122 +39,18 @@ def build_message_send_xcommand(text: str, kv_pairs: List[Tuple[str, str]]) -> s
 
 
 # -------------------------
-# Local mode: SSH xAPI
-# -------------------------
-
-def connect_ssh(host: str, port: int, username: str, password: Optional[str],
-                key_path: Optional[str], timeout: int) -> paramiko.SSHClient:
-    client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-
-    pkey = None
-    if key_path:
-        last_exc: Optional[Exception] = None
-        for key_cls in (paramiko.RSAKey, paramiko.ECDSAKey, paramiko.Ed25519Key):
-            try:
-                pkey = key_cls.from_private_key_file(key_path)
-                break
-            except Exception as e:
-                last_exc = e
-        if pkey is None:
-            raise RuntimeError(f"Failed to load private key from {key_path}: {last_exc}")
-
-    client.connect(
-        hostname=host,
-        port=port,
-        username=username,
-        password=password if not pkey else None,
-        pkey=pkey,
-        look_for_keys=False,
-        allow_agent=False,
-        timeout=timeout,
-        banner_timeout=timeout,
-        auth_timeout=timeout,
-    )
-    return client
-
-
-def drain(chan, max_reads: int = 50) -> str:
-    chunks = []
-    reads = 0
-    while reads < max_reads and chan.recv_ready():
-        data = chan.recv(65535)
-        if not data:
-            break
-        chunks.append(data.decode("utf-8", errors="replace"))
-        reads += 1
-    return "".join(chunks)
-
-
-def ssh_run_xcommand(host: str, port: int, username: str, password: Optional[str],
-                     key_path: Optional[str], xcommand: str, timeout: int) -> str:
-    client = connect_ssh(host, port, username, password, key_path, timeout)
-    try:
-        transport = client.get_transport()
-        if transport is None:
-            raise RuntimeError("SSH transport unavailable")
-
-        chan = transport.open_session()
-        chan.get_pty()
-        chan.invoke_shell()
-
-        time.sleep(0.2)
-        _ = drain(chan)  # banners/prompts
-
-        chan.send(xcommand.strip() + "\n")
-        time.sleep(0.15)
-        out = drain(chan)
-
-        time.sleep(0.15)
-        out += drain(chan)
-
-        try:
-            chan.send("exit\n")
-        except Exception:
-            pass
-
-        return out.strip()
-    finally:
-        client.close()
-
-
-# -------------------------
 # Cloud mode: Webex xAPI REST
 # -------------------------
 
 def cloud_message_send(device_id: str, token: str, text: str, kv_pairs: List[Tuple[str, str]],
                        base_url: str, timeout: int) -> Dict[str, Any]:
-    """
-    POST https://webexapis.com/v1/xapi/command/Message.Send
-    {
-      "deviceId": "...",
-      "arguments": {
-        "Text": "...",
-        "Key": ["k1","k2"],
-        "Value": ["v1","v2"]
-      }
-    }
-    """
-    url = f"{base_url.rstrip('/')}/v1/xapi/command/Message.Send"
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-
+    """POST /v1/xapi/command/Message.Send with Text and parallel Key/Value arrays."""
     arguments: Dict[str, Any] = {"Text": text}
     if kv_pairs:
         # Mapping repeated Key/Value pairs into arrays is the cleanest REST representation.
         arguments["Key"] = [k for k, _ in kv_pairs]
         arguments["Value"] = [v for _, v in kv_pairs]
-
-    payload = {"deviceId": device_id, "arguments": arguments}
-
-    resp = requests.post(url, headers=headers, json=payload, timeout=timeout)
-    if not resp.ok:
-        raise RuntimeError(f"Cloud xAPI failed: HTTP {resp.status_code} - {resp.text}")
-
-    return resp.json() if resp.text.strip() else {"status": "ok"}
+    return xapi_command("Message.Send", device_id, token, arguments, base_url, timeout)
 
 
 # -------------------------
