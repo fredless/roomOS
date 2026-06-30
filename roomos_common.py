@@ -257,3 +257,42 @@ def xapi_status(name: str, device_id: str, token: str, base_url: str, timeout: i
     if resp.text.strip():
         return resp.json()
     return empty_default if empty_default is not None else {}
+
+
+def list_devices(token: str, base_url: str, timeout: int,
+                 **filters: Any) -> List[Dict[str, Any]]:
+    """List devices in the org, following pagination. Server-side filters via kwargs."""
+    url = f"{base_url.rstrip('/')}/v1/devices"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    params: Dict[str, Any] = {k: v for k, v in filters.items() if v is not None}
+    params["max"] = params.get("max", 100)
+    start = 0
+    devices: List[Dict[str, Any]] = []
+    while True:
+        params["start"] = start
+        resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+        if not resp.ok:
+            raise RuntimeError(f"Device list failed: HTTP {resp.status_code} - {resp.text}")
+        items = (resp.json() or {}).get("items", [])
+        if not items:
+            break
+        devices.extend(items)
+        if len(items) < params["max"]:
+            break
+        start += len(items)
+    return devices
+
+
+def xconfig_get(key: str, device_id: str, token: str, base_url: str, timeout: int) -> Any:
+    """GET a single xConfiguration value via /v1/deviceConfigurations; None if absent."""
+    url = f"{base_url.rstrip('/')}/v1/deviceConfigurations"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    params = {"deviceId": device_id, "key": key}
+    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+    if not resp.ok:
+        raise RuntimeError(f"Config query failed: HTTP {resp.status_code} - {resp.text}")
+    items = (resp.json() or {}).get("items", {})
+    entry = items.get(key) if isinstance(items, dict) else None
+    if isinstance(entry, dict) and "value" in entry:
+        return entry["value"]
+    return None
