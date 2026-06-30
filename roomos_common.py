@@ -8,6 +8,7 @@ pieces it needs so this logic lives in exactly one place.
 
 from __future__ import annotations
 
+import getpass
 import os
 import re
 import time
@@ -19,18 +20,41 @@ import yaml
 
 _KV_RE = re.compile(r"^(?P<k>[^=]+)=(?P<v>.*)$")
 
+# Shared config file in the user's home dir, the same one the other Cisco Collab repos use.
+# i.e. ~/Personal-Local/config.yml  (Windows: C:\Users\<you>\Personal-Local\config.yml)
+CONFIG_FILE = os.path.join(os.path.expanduser("~"), "Personal-Local", "config.yml")
+
+# device id changes often during a session, so it is resolved from CLI/env, never the config
+DEVICE_ID_ENV = "ROOMOS_DEVICE_ID"
+
 
 # ------------------------------------------------------------------
-# Config
+# Config / credential resolution
 # ------------------------------------------------------------------
 
-def load_config(path: str) -> Dict[str, Any]:
-    """Load token / device_id from a YAML config file. Returns {} on missing file."""
+def load_config(path: str = CONFIG_FILE) -> Dict[str, Any]:
+    """Load the shared YAML config (~/Personal-Local/config.yml). Returns {} if absent."""
     if not os.path.isfile(path):
         return {}
     with open(path, encoding="utf-8") as fh:
-        data = yaml.safe_load(fh)
+        data = yaml.full_load(fh)
     return data if isinstance(data, dict) else {}
+
+
+def resolve_token(arg_token: Optional[str] = None) -> str:
+    """Webex token: --token arg, else wxteams.auth_token from config, else prompt."""
+    if arg_token:
+        return arg_token
+    wxteams = load_config().get("wxteams") or {}
+    token = wxteams.get("auth_token")
+    if token:
+        return token
+    return getpass.getpass("Webex Access Token: ")
+
+
+def resolve_device_id(arg_device_id: Optional[str] = None) -> Optional[str]:
+    """Codec device id: --device-id arg, else the ROOMOS_DEVICE_ID environment variable."""
+    return arg_device_id or os.environ.get(DEVICE_ID_ENV)
 
 
 # ------------------------------------------------------------------

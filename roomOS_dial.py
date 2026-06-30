@@ -25,16 +25,12 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
-import os
 import re
 import sys
 from typing import Any, Dict, List, Tuple
 
-from roomos_common import (load_config, parse_kv, ssh_run_xcommand, xapi_command,
-                           xapi_status, xquote as _xquote)
-
-_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-_DEFAULT_CONFIG = os.path.join(_SCRIPT_DIR, "config.yaml")
+from roomos_common import (parse_kv, resolve_device_id, resolve_token, ssh_run_xcommand,
+                           xapi_command, xapi_status, xquote as _xquote)
 
 
 def build_dial_xcommand(number: str, args: List[Tuple[str, str]]) -> str:
@@ -110,9 +106,7 @@ def main() -> int:
     ap_local.add_argument("--timeout", type=int, default=10, help="SSH timeout seconds (default: 10)")
 
     ap_cloud = sub.add_parser("cloud", help="Dial via Webex Cloud xAPI REST")
-    ap_cloud.add_argument("--config", default=_DEFAULT_CONFIG,
-                          help="Path to YAML config file with token/device_id (default: config.yaml beside script)")
-    ap_cloud.add_argument("--device-id", help="Webex deviceId of the codec")
+    ap_cloud.add_argument("--device-id", help="Webex deviceId of the codec (or set ROOMOS_DEVICE_ID)")
     ap_cloud.add_argument("--token", help="Webex access token (omit to prompt)")
     ap_cloud.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
     ap_cloud.add_argument("--timeout", type=int, default=15, help="HTTP timeout seconds (default: 15)")
@@ -163,11 +157,11 @@ def main() -> int:
             return 0
 
         if args.mode == "cloud":
-            cfg = load_config(args.config)
-            token = args.token or cfg.get("token") or getpass.getpass("Webex Access Token: ")
-            device_id = args.device_id or cfg.get("device_id")
+            token = resolve_token(args.token)
+            device_id = resolve_device_id(args.device_id)
             if not device_id:
-                print("ERROR: --device-id is required (via CLI or config.yaml)", file=sys.stderr)
+                print("ERROR: device id required: pass --device-id or set ROOMOS_DEVICE_ID",
+                      file=sys.stderr)
                 return 2
 
             if args.status:
