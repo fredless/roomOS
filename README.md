@@ -38,7 +38,7 @@ pip install paramiko requests pyyaml
 
 | Script | Purpose |
 | --- | --- |
-| [roomOS_bulk_query.py](roomOS_bulk_query.py) | Query xStatus/xConfiguration values across a filtered set of org devices (model/type/connection) and export to CSV (cloud only). |
+| [roomOS_bulk_query.py](roomOS_bulk_query.py) | Query xStatus/xConfiguration values across a filtered set of org devices (model/kind/type/platform/connection) and export to CSV (cloud only). |
 | [roomOS_clock_sync.py](roomOS_clock_sync.py) | Read the codec clock and optionally set the local PC clock to match (needs admin/root). |
 | [roomOS_dial.py](roomOS_dial.py) | Place a call (SIP/Spark, Video/Audio) or show current call status. |
 | [roomOS_ethernet_mics.py](roomOS_ethernet_mics.py) | Enumerate connected microphones and per-stream detail for ethernet audio inputs. |

@@ -24,7 +24,9 @@ Webex org (cloud xAPI) and export the results to CSV. Cloud-only -- there is no 
 
 Scope the devices with any combination of:
   --model        product name, supports shell wildcards (e.g. "*Desk*", "Room Bar")
-  --type         personal | workspace  (whether the device is assigned to a person or a space)
+  --kind         personal | workspace  (whether the device is assigned to a person or a space)
+  --type         device type, e.g. roomdesk, accessory, phone
+  --platform     device platform, e.g. cisco
   --connection   online | offline | expired (aliases) or a raw connectionStatus value
 
 Choose the values to read with repeatable flags using dot-notation tree paths:
@@ -61,8 +63,8 @@ CONNECTION_ALIASES = {
     "expired": {"offline_expired"},
 }
 
-# identity columns emitted before the queried value columns
-IDENTITY_COLUMNS = ["displayName", "product", "kind", "connectionStatus", "deviceId"]
+# fixed identity columns emitted before the queried value columns (header -> device field)
+IDENTITY_COLUMNS = ["displayName", "status", "type", "devicePlatform", "ipAddress", "macAddress"]
 
 _INDEX_RE = re.compile(r"^(?P<name>.+)\[(?P<idx>\d+)\]$")
 
@@ -85,14 +87,18 @@ def expand_connections(values: List[str]) -> set:
     return accepted
 
 
-def matches_filters(device: Dict[str, Any], models: List[str], types: List[str],
-                    connections: set) -> bool:
-    """Apply the model / type / connection filters to a device (all client-side)."""
+def matches_filters(device: Dict[str, Any], models: List[str], kinds: List[str],
+                    types: List[str], platforms: List[str], connections: set) -> bool:
+    """Apply the model / kind / type / platform / connection filters (all client-side)."""
     if models:
         product = (device.get("product") or "").lower()
         if not any(fnmatch.fnmatch(product, m.lower()) for m in models):
             return False
-    if types and device_kind(device) not in types:
+    if kinds and device_kind(device) not in kinds:
+        return False
+    if types and (device.get("type") or "").lower() not in [t.lower() for t in types]:
+        return False
+    if platforms and (device.get("devicePlatform") or "").lower() not in [p.lower() for p in platforms]:
         return False
     if connections and (device.get("connectionStatus") or "").lower() not in connections:
         return False
@@ -126,10 +132,11 @@ def query_device(device: Dict[str, Any], status_paths: List[str], config_keys: L
     device_id = device.get("id", "")
     row: Dict[str, Any] = {
         "displayName": device.get("displayName", ""),
-        "product": device.get("product", ""),
-        "kind": device_kind(device),
-        "connectionStatus": device.get("connectionStatus", ""),
-        "deviceId": device_id,
+        "status": device.get("connectionStatus", ""),
+        "type": device.get("type", ""),
+        "devicePlatform": device.get("devicePlatform", ""),
+        "ipAddress": device.get("ip", ""),
+        "macAddress": device.get("mac", ""),
     }
 
     for path in status_paths:
@@ -162,8 +169,12 @@ def main() -> int:
 
     ap.add_argument("--model", action="append", default=[],
                     help="Filter by product name; wildcards allowed, e.g. '*Desk*' (repeatable)")
-    ap.add_argument("--type", action="append", default=[], choices=["personal", "workspace"],
+    ap.add_argument("--kind", action="append", default=[], choices=["personal", "workspace"],
                     help="Filter by assignment: personal or workspace (repeatable)")
+    ap.add_argument("--type", action="append", default=[],
+                    help="Filter by device type, e.g. roomdesk, accessory, phone (repeatable)")
+    ap.add_argument("--platform", action="append", default=[],
+                    help="Filter by device platform, e.g. cisco (repeatable)")
     ap.add_argument("--connection", action="append", default=[],
                     help="Filter by status: online/offline/expired or a raw connectionStatus "
                          "value (repeatable)")
@@ -189,7 +200,7 @@ def main() -> int:
 
         connections = expand_connections(args.connection)
         matched = [d for d in devices
-                   if matches_filters(d, args.model, args.type, connections)]
+                   if matches_filters(d, args.model, args.kind, args.type, args.platform, connections)]
         print(f"{len(matched)} of {len(devices)} device(s) match the filter.", file=sys.stderr)
         if not matched:
             return 0
