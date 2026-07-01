@@ -23,7 +23,7 @@ pip install paramiko requests pyyaml
     auth_token: <a Webex access token>
   ```
 
-  (On Windows that's `C:\Users\<you>\Personal-Local\config.yml`.) The token needs the Cloud xAPI scopes **`spark:xapi_commands`** and **`spark:xapi_statuses`** (both covered by `spark:all`); commands that change device state require the token to belong to an admin of, or have access to, the device.
+  (On Windows that's `C:\Users\<you>\Personal-Local\config.yml`.) The token needs the Cloud xAPI scopes **`spark:xapi_statuses`** and **`spark:xapi_commands`** — these are **not** included in `spark:all` and must be added to the integration explicitly (a token without them gets a `403` on xStatus/xCommand calls). Reading device configurations (`roomOS_bulk_query.py --config`) and listing devices instead use admin device scopes such as `spark-admin:devices_read`.
 
 - **Device ID** — supplied per run, since it changes often during a session: pass **`--device-id <id>`**, or set the **`ROOMOS_DEVICE_ID`** environment variable as a session default (`--device-id` overrides it). It is intentionally *not* stored in `config.yml`.
 

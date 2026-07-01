@@ -127,9 +127,10 @@ def extract_value(result: Any, path: str) -> Any:
 
 
 def query_device(device: Dict[str, Any], status_paths: List[str], config_keys: List[str],
-                 token: str, base_url: str, timeout: int) -> Dict[str, Any]:
-    """Build one CSV row dict for a device: identity columns plus each requested value."""
+                 token: str, base_url: str, timeout: int, verbose: bool = False):
+    """Build one CSV row for a device (identity + queried values); return (row, null_count)."""
     device_id = device.get("id", "")
+    name = device.get("displayName", device_id)
     row: Dict[str, Any] = {
         "displayName": device.get("displayName", ""),
         "status": device.get("connectionStatus", ""),
@@ -138,23 +139,32 @@ def query_device(device: Dict[str, Any], status_paths: List[str], config_keys: L
         "ipAddress": device.get("ip", ""),
         "macAddress": device.get("mac", ""),
     }
+    nulls = 0
+
+    def read(label: str, getter) -> None:
+        nonlocal nulls
+        reason: Optional[str] = None
+        try:
+            value = getter()
+            if value is None:
+                reason = "no value returned"
+        except Exception as exc:
+            value = None
+            reason = str(exc)[:160]
+        if value is None:
+            nulls += 1
+            row[label] = NULL
+            if verbose:
+                print(f"  ! {name} :: {label} -> (null): {reason}", file=sys.stderr)
+        else:
+            row[label] = value
 
     for path in status_paths:
-        try:
-            result = xapi_status(path, device_id, token, base_url, timeout)
-            value = extract_value(result, path)
-            row[path] = NULL if value is None else value
-        except Exception:
-            row[path] = NULL
-
+        read(path, lambda p=path: extract_value(xapi_status(p, device_id, token, base_url, timeout), p))
     for key in config_keys:
-        try:
-            value = xconfig_get(key, device_id, token, base_url, timeout)
-            row[key] = NULL if value is None else value
-        except Exception:
-            row[key] = NULL
+        read(key, lambda k=key: xconfig_get(k, device_id, token, base_url, timeout))
 
-    return row
+    return row, nulls
 
 
 def main() -> int:
@@ -185,6 +195,8 @@ def main() -> int:
                     help="xConfiguration key to read, e.g. Audio.DefaultVolume (repeatable)")
 
     ap.add_argument("-o", "--output", help="Write CSV to this file (default: stdout)")
+    ap.add_argument("--verbose", action="store_true",
+                    help="Log per-value lookup failures (e.g. missing scope) to stderr")
 
     args = ap.parse_args()
 
@@ -207,11 +219,14 @@ def main() -> int:
 
         fieldnames = IDENTITY_COLUMNS + args.status + args.config
         rows = []
+        total_nulls = 0
         for index, device in enumerate(matched, 1):
             print(f"  [{index}/{len(matched)}] querying {device.get('displayName', device.get('id', ''))}...",
                   file=sys.stderr)
-            rows.append(query_device(device, args.status, args.config,
-                                     token, args.base_url, args.timeout))
+            row, nulls = query_device(device, args.status, args.config,
+                                      token, args.base_url, args.timeout, args.verbose)
+            rows.append(row)
+            total_nulls += nulls
 
         out = open(args.output, "w", newline="", encoding="utf-8") if args.output else sys.stdout
         try:
@@ -224,6 +239,9 @@ def main() -> int:
 
         if args.output:
             print(f"Wrote {len(rows)} row(s) to {args.output}", file=sys.stderr)
+        if total_nulls and not args.verbose:
+            print(f"Note: {total_nulls} value lookup(s) returned (null) — re-run with "
+                  "--verbose to see why.", file=sys.stderr)
         return 0
 
     except KeyboardInterrupt:
