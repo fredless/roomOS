@@ -31,7 +31,11 @@ separate "local login" flag. The only login-channel option is ShellLogin (SSH), 
 device default here. Valid roles per the RoomOS schema: Admin, Audit, User, Integrator,
 RoomControl.
 
-Usage: roomos_add_localuser.py --name "<device search>" --username <user> [--password <pw>]
+Usage: roomos_add_localuser.py --name "<device search>" --username <user>
+       [--password <pw> | --generate-password]
+
+With --generate-password (-g) a strong random passphrase is generated and printed to stdout
+after the user is created, so you can record it.
 
 Reads the Webex token from --token or ~/Personal-Local/config.yml (wxteams.auth_token); needs
 the spark:xapi_commands scope (not part of spark:all) and admin access to the device's org.
@@ -42,10 +46,24 @@ from __future__ import annotations
 import argparse
 import fnmatch
 import getpass
+import secrets
+import string
 import sys
 from typing import Any, Dict, List, Optional
 
 from roomos_common import list_devices, resolve_token, xapi_command
+
+_PASSWORD_SYMBOLS = "!@#$%^*-_=+"
+_PASSWORD_ALPHABET = string.ascii_letters + string.digits + _PASSWORD_SYMBOLS
+
+
+def generate_password(length: int = 20) -> str:
+    """Generate a strong random passphrase with mixed character classes (crypto-random)."""
+    while True:
+        pw = "".join(secrets.choice(_PASSWORD_ALPHABET) for _ in range(length))
+        if (any(c.islower() for c in pw) and any(c.isupper() for c in pw)
+                and any(c.isdigit() for c in pw) and any(c in _PASSWORD_SYMBOLS for c in pw)):
+            return pw
 
 
 def find_devices(devices: List[Dict[str, Any]], term: str) -> List[Dict[str, Any]]:
@@ -82,7 +100,10 @@ def main() -> int:
     ap.add_argument("--name", required=True,
                     help="Device display-name search term (wildcards allowed)")
     ap.add_argument("--username", required=True, help="Username for the new local user")
-    ap.add_argument("--password", help="Passphrase for the new user (omit to be prompted)")
+    pw_group = ap.add_mutually_exclusive_group()
+    pw_group.add_argument("--password", help="Passphrase for the new user (omit to be prompted)")
+    pw_group.add_argument("-g", "--generate-password", action="store_true",
+                          help="Generate a strong random passphrase and print it after creation")
     ap.add_argument("--token", help="Webex access token (omit to read config / prompt)")
     ap.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
     ap.add_argument("--timeout", type=int, default=30, help="HTTP timeout seconds (default: 30)")
@@ -90,9 +111,13 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
-        # resolve the passphrase (prompt + confirm if not given on the command line)
+        # resolve the passphrase: explicit --password, generated (-g), or prompt + confirm
+        generated = False
         if args.password:
             password = args.password
+        elif args.generate_password:
+            password = generate_password()
+            generated = True
         else:
             password = getpass.getpass("New user passphrase: ")
             if password != getpass.getpass("Confirm passphrase: "):
@@ -139,6 +164,8 @@ def main() -> int:
                      args.base_url, args.timeout)
         print(f"Created local admin user '{args.username}' on "
               f"{device.get('displayName', '')}.")
+        if generated:
+            print(f"Generated passphrase: {password}")
         return 0
 
     except KeyboardInterrupt:

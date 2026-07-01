@@ -39,7 +39,7 @@ pip install paramiko requests pyyaml
 
 | Script | Purpose |
 | --- | --- |
-| [roomOS_add_localuser.py](roomOS_add_localuser.py) | Create a local admin user on a device — search by display name, pick from the matches, then `xCommand UserManagement User Add` (cloud only). |
+| [roomOS_add_localuser.py](roomOS_add_localuser.py) | Create a local admin user on a device — search by display name, pick from the matches, then `xCommand UserManagement User Add`; can auto-generate the passphrase (`-g`) and print it (cloud only). |
 | [roomOS_bulk_query.py](roomOS_bulk_query.py) | Query xStatus/xConfiguration values across a filtered set of org devices (model/kind/type/platform/connection) and export to CSV (cloud only). |
 | [roomOS_clock_sync.py](roomOS_clock_sync.py) | Read the codec clock and optionally set the local PC clock to match (needs admin/root). |
 | [roomOS_dial.py](roomOS_dial.py) | Place a call (SIP/Spark, Video/Audio) or show current call status. |
