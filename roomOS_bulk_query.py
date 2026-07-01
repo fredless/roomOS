@@ -68,7 +68,8 @@ CONNECTION_ALIASES = {
 }
 
 # fixed identity columns emitted before the queried value columns (header -> device field)
-IDENTITY_COLUMNS = ["displayName", "status", "type", "devicePlatform", "ipAddress", "macAddress"]
+IDENTITY_COLUMNS = ["displayName", "status", "type", "devicePlatform", "ipAddress", "macAddress",
+                    "lastSeen", "serial", "software", "product"]
 
 _INDEX_RE = re.compile(r"^(?P<name>.+)\[(?P<idx>\d+)\]$")
 
@@ -142,6 +143,10 @@ def query_device(device: Dict[str, Any], status_paths: List[str], config_keys: L
         "devicePlatform": device.get("devicePlatform", ""),
         "ipAddress": device.get("ip", ""),
         "macAddress": device.get("mac", ""),
+        "lastSeen": device.get("lastSeen", ""),
+        "serial": device.get("serial", ""),
+        "software": device.get("software", ""),
+        "product": device.get("product", ""),
     }
     nulls = 0
 
