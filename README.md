@@ -33,6 +33,7 @@ pip install paramiko requests pyyaml
 
 - Repeatable command arguments use `--kv key=value` (e.g. `--kv CallType=Video`).
 - Cloud commands print a short human-readable summary by default; add `--json` for the raw API response.
+- `roomOS_bulk_query.py` xStatus/xConfiguration paths are **case-sensitive** — they must match the RoomOS xAPI casing (PascalCase, e.g. `SystemUnit.Uptime`, `Audio.DefaultVolume`).
 
 ## Utilities
 

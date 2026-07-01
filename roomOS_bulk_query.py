@@ -34,6 +34,10 @@ Choose the values to read with repeatable flags using dot-notation tree paths:
   --config Audio.DefaultVolume        (read via /v1/deviceConfigurations)
 Simple [n] indexes are supported, e.g. --status "Network[1].IPv4.Address".
 
+These paths are CASE-SENSITIVE and must match the RoomOS xAPI casing exactly (PascalCase, e.g.
+SystemUnit.Uptime, Audio.DefaultVolume, Network[1].IPv4.Address). The Webex API accepts a
+wrong-cased path but returns no value, so that cell shows "(null)".
+
 Each requested path becomes a CSV column. A device that does not return a requested value
 (commonly an error/unsupported condition) reports "(null)" for that cell.
 
@@ -240,8 +244,9 @@ def main() -> int:
         if args.output:
             print(f"Wrote {len(rows)} row(s) to {args.output}", file=sys.stderr)
         if total_nulls and not args.verbose:
-            print(f"Note: {total_nulls} value lookup(s) returned (null) — re-run with "
-                  "--verbose to see why.", file=sys.stderr)
+            print(f"Note: {total_nulls} value lookup(s) returned (null) — check path casing "
+                  "(paths are case-sensitive) or re-run with --verbose to see why.",
+                  file=sys.stderr)
         return 0
 
     except KeyboardInterrupt:
