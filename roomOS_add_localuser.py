@@ -19,11 +19,14 @@
 """
 roomos_add_localuser.py
 
-Create a local admin user on a RoomOS device via Webex Cloud xAPI
+Create a local admin user on one or more RoomOS devices via Webex Cloud xAPI
 (xCommand UserManagement User Add). Cloud-only.
 
-Give a device display-name search term (wildcards allowed); the tool lists the matching devices
-and lets you pick one, then creates the user. The new user is created with:
+Select the target devices the standard fleet-tool way (shared with roomOS_find_device.py):
+--name search with an interactive pick (the classic single-device flow), explicit
+--device-id (repeatable), --stdin (ids one per line, pipeable), or the
+--model/--kind/--type/--platform/--connection filters for a whole fleet slice.
+The same user (and passphrase) is created on every selected device. It is created with:
   Role                     = Admin   (admin privileges)
   PassphraseChangeRequired = False   (no forced passphrase reset at first login)
 It is always a local account -- that is what UserManagement User Add creates; the command has no
@@ -31,8 +34,8 @@ separate "local login" flag. The only login-channel option is ShellLogin (SSH), 
 device default here. Valid roles per the RoomOS schema: Admin, Audit, User, Integrator,
 RoomControl.
 
-Usage: roomos_add_localuser.py --name "<device search>" --username <user>
-       [--password <pw> | --generate-password]
+Usage: roomOS_add_localuser.py --name "<device search>" --username <user>
+       [--password <pw> | --generate-password] [-y]
 
 With --generate-password (-g) a strong random passphrase is generated and printed to stdout
 after the user is created, so you can record it.
@@ -44,14 +47,13 @@ the spark:xapi_commands scope (not part of spark:all) and admin access to the de
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import getpass
 import secrets
 import string
 import sys
-from typing import Any, Dict, List, Optional
 
-from roomos_common import list_devices, resolve_token, xapi_command
+from roomos_common import (add_selection_args, confirmed, device_summary,
+                           resolve_target_devices, resolve_token, xapi_command)
 
 _PASSWORD_SYMBOLS = "!@#$%^*-_=+"
 _PASSWORD_ALPHABET = string.ascii_letters + string.digits + _PASSWORD_SYMBOLS
@@ -66,47 +68,22 @@ def generate_password(length: int = 20) -> str:
             return pw
 
 
-def find_devices(devices: List[Dict[str, Any]], term: str) -> List[Dict[str, Any]]:
-    """Case-insensitive match of a search term against device displayName (wildcards allowed)."""
-    t = term.lower()
-    pattern = t if any(ch in t for ch in "*?[") else f"*{t}*"
-    return [d for d in devices if fnmatch.fnmatch((d.get("displayName") or "").lower(), pattern)]
-
-
-def choose_device(matches: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-    """Print a numbered device list and prompt for a selection; return the choice or None."""
-    for i, d in enumerate(matches, 1):
-        print(f"  {i}. {d.get('displayName', '')}  "
-              f"[{d.get('product', '')}, {d.get('connectionStatus', '')}]", file=sys.stderr)
-    try:
-        raw = input(f"Select device [1-{len(matches)}] (blank to cancel): ").strip()
-    except EOFError:
-        return None
-    if raw.isdigit() and 1 <= int(raw) <= len(matches):
-        return matches[int(raw) - 1]
-    return None
-
-
-def confirmed(question: str) -> bool:
-    """Ask a yes/no question."""
-    return input(f"{question} (y/n): ").strip().lower() in ("y", "yes")
-
-
 def main() -> int:
-    """create a local admin user on a RoomOS device (cloud xAPI)"""
+    """create a local admin user on selected RoomOS devices (cloud xAPI)"""
     ap = argparse.ArgumentParser(
-        description="Create a local admin user on a RoomOS device via Webex Cloud xAPI.",
+        description="Create a local admin user on RoomOS devices via Webex Cloud xAPI.",
     )
-    ap.add_argument("--name", required=True,
-                    help="Device display-name search term (wildcards allowed)")
     ap.add_argument("--username", required=True, help="Username for the new local user")
     pw_group = ap.add_mutually_exclusive_group()
     pw_group.add_argument("--password", help="Passphrase for the new user (omit to be prompted)")
     pw_group.add_argument("-g", "--generate-password", action="store_true",
                           help="Generate a strong random passphrase and print it after creation")
+    ap.add_argument("-y", "--yes", action="store_true",
+                    help="Skip the confirmation prompt (needed for non-interactive runs)")
     ap.add_argument("--token", help="Webex access token (omit to read config / prompt)")
     ap.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
     ap.add_argument("--timeout", type=int, default=30, help="HTTP timeout seconds (default: 30)")
+    add_selection_args(ap)
 
     args = ap.parse_args()
 
@@ -129,27 +106,25 @@ def main() -> int:
 
         token = resolve_token(args.token)
 
-        print(f"Searching for devices matching '{args.name}'...", file=sys.stderr)
-        matches = find_devices(list_devices(token, args.base_url, args.timeout), args.name)
-        if not matches:
-            print(f"No devices match '{args.name}'.", file=sys.stderr)
+        devices = resolve_target_devices(args, token, args.base_url, args.timeout)
+        if not devices:
+            print("No devices selected.", file=sys.stderr)
             return 1
 
-        if len(matches) == 1:
-            device = matches[0]
-            print(f"One match: {device.get('displayName', '')} "
-                  f"[{device.get('product', '')}, {device.get('connectionStatus', '')}]",
-                  file=sys.stderr)
-        else:
-            device = choose_device(matches)
-        if device is None:
-            print("Cancelled.", file=sys.stderr)
-            return 0
+        print(f"Target device(s) ({len(devices)}):", file=sys.stderr)
+        for device in devices:
+            print(f"  {device_summary(device)}", file=sys.stderr)
 
-        if not confirmed(f"Create admin user '{args.username}' on "
-                         f"\"{device.get('displayName', '')}\"?"):
-            print("Aborted.", file=sys.stderr)
-            return 0
+        if not args.yes:
+            try:
+                if not confirmed(f"Create admin user '{args.username}' on "
+                                 f"{len(devices)} device(s)?"):
+                    print("Aborted.", file=sys.stderr)
+                    return 0
+            except EOFError:
+                print("ERROR: no console available to confirm -- re-run with -y/--yes",
+                      file=sys.stderr)
+                return 2
 
         # xCommand UserManagement User Add (fields verified against the RoomOS schema). There is
         # no "local login" flag -- the account is local by definition. Role is a LiteralArray;
@@ -160,13 +135,23 @@ def main() -> int:
             "Role": ["Admin"],                    # admin privileges
             "PassphraseChangeRequired": "False",  # no forced reset at first login
         }
-        xapi_command("UserManagement.User.Add", device["id"], token, arguments,
-                     args.base_url, args.timeout)
-        print(f"Created local admin user '{args.username}' on "
-              f"{device.get('displayName', '')}.")
-        if generated:
+        failures = 0
+        for index, device in enumerate(devices, 1):
+            name = device.get("displayName", device.get("id", ""))
+            print(f"  [{index}/{len(devices)}] creating user on {name}...", file=sys.stderr)
+            try:
+                xapi_command("UserManagement.User.Add", device["id"], token, arguments,
+                             args.base_url, args.timeout)
+            except Exception as exc:
+                failures += 1
+                print(f"  ! {name}: {exc}", file=sys.stderr)
+
+        created = len(devices) - failures
+        print(f"Created local admin user '{args.username}' on {created} of "
+              f"{len(devices)} device(s)" + (f"; {failures} failed" if failures else "") + ".")
+        if generated and created:
             print(f"Generated passphrase: {password}")
-        return 0
+        return 1 if failures else 0
 
     except KeyboardInterrupt:
         print("\nCancelled.", file=sys.stderr)
