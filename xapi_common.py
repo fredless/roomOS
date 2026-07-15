@@ -1,24 +1,24 @@
 # Copyright (C) 2026 Frederick W. Nielsen
 #
-# This file is part of roomOS.
+# This file is part of xAPI tools.
 #
-# roomOS is free software: you can redistribute it and/or modify
+# xAPI tools is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# roomOS is distributed in the hope that it will be useful,
+# xAPI tools is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with roomOS.  If not, see <https://www.gnu.org/licenses/>.
+# along with xAPI tools.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-roomos_common.py
+xapi_common.py
 
-Shared helpers for the roomOS utilities: YAML config loading, local-mode SSH (xAPI over a
+Shared helpers for the xAPI tools: YAML config loading, local-mode SSH (xAPI over a
 paramiko shell), and cloud-mode Webex xAPI command/status calls. Each script imports the
 pieces it needs so this logic lives in exactly one place.
 """
@@ -45,7 +45,7 @@ _KV_RE = re.compile(r"^(?P<k>[^=]+)=(?P<v>.*)$")
 CONFIG_FILE = os.path.join(os.path.expanduser("~"), "Personal-Local", "config.yml")
 
 # device id changes often during a session, so it is resolved from CLI/env, never the config
-DEVICE_ID_ENV = "ROOMOS_DEVICE_ID"
+DEVICE_ID_ENV = "XAPI_DEVICE_ID"
 
 
 # ------------------------------------------------------------------
@@ -73,7 +73,7 @@ def resolve_token(arg_token: Optional[str] = None) -> str:
 
 
 def resolve_device_id(arg_device_id: Optional[str] = None) -> Optional[str]:
-    """Codec device id: --device-id arg, else the ROOMOS_DEVICE_ID environment variable."""
+    """Codec device id: --device-id arg, else the XAPI_DEVICE_ID environment variable."""
     return arg_device_id or os.environ.get(DEVICE_ID_ENV)
 
 
@@ -107,10 +107,10 @@ def parse_kv(items: List[str], flag: str = "--kv") -> List[Tuple[str, str]]:
 #
 # Every fleet tool selects its target devices the same way, in precedence order:
 #   1. --device-id <id>       explicit id(s), repeatable
-#   2. --stdin                ids read one per line from stdin (pipe from roomOS_find_device.py)
+#   2. --stdin                ids read one per line from stdin (pipe from xapi_find_device.py)
 #   3. filter flags           --model/--kind/--type/--platform/--connection (all matches)
 #   4. --name <term>          display-name search; interactive pick if several match
-#   5. ROOMOS_DEVICE_ID env   session-default single device
+#   5. XAPI_DEVICE_ID env   session-default single device
 # Selection UI and progress always go to stderr so stdout stays clean for piping.
 # ------------------------------------------------------------------
 
@@ -221,7 +221,7 @@ def add_selection_args(ap: argparse.ArgumentParser) -> None:
                      help="Target device id; repeatable (skips search/filters)")
     sel.add_argument("--stdin", action="store_true",
                      help="Read device ids from stdin, one per line "
-                          "(pipe from roomOS_find_device.py)")
+                          "(pipe from xapi_find_device.py)")
     sel.add_argument("--name", metavar="TERM",
                      help="Device display-name search term (wildcards allowed); "
                           "prompts to pick when several match")
@@ -245,7 +245,7 @@ def resolve_target_devices(args: argparse.Namespace, token: str, base_url: str, 
     """Resolve the flags added by add_selection_args() to a list of device dicts.
 
     Precedence: --device-id / --stdin (combined) -> filters (+ optional --name narrowing,
-    interactive pick unless --all) -> ROOMOS_DEVICE_ID env. With default_all=True, no
+    interactive pick unless --all) -> XAPI_DEVICE_ID env. With default_all=True, no
     selection at all means every device in the org. Returns [] when a pick is cancelled
     or nothing matches; raises ValueError when no selection was given at all.
     """

@@ -1,36 +1,36 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Frederick W. Nielsen
 #
-# This file is part of roomOS.
+# This file is part of xAPI tools.
 #
-# roomOS is free software: you can redistribute it and/or modify
+# xAPI tools is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# roomOS is distributed in the hope that it will be useful,
+# xAPI tools is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with roomOS.  If not, see <https://www.gnu.org/licenses/>.
+# along with xAPI tools.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-roomOS_find_device.py
+xapi_find_device.py
 
 Select RoomOS devices in your Webex org and print their device ids to stdout, one per line.
 Cloud-only. This is the producer half of the fleet-tool pipeline: everything human-readable
 (match lists, the interactive pick, progress) goes to stderr, so stdout can be piped straight
 into any consumer tool's --stdin:
 
-  roomOS_find_device.py --name lobby | roomOS_apply_config.py --stdin --set Audio.DefaultVolume=60
+  xapi_find_device.py --name lobby | xapi_apply_config.py --stdin --set Audio.DefaultVolume=60
 
 Select devices with any combination of:
   --name         display-name search (wildcards allowed); several matches prompt an
                  interactive numbered pick unless --all is given
   --model / --kind / --type / --platform / --connection
-                 the same filters as roomOS_bulk_query.py; all matches are emitted
+                 the same filters as xapi_bulk_query.py; all matches are emitted
   --all          with --name, emit every match instead of picking one; alone, emit
                  every device in the org
 
@@ -46,7 +46,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from roomos_common import (add_selection_args, device_summary, resolve_target_devices,
+from xapi_common import (add_selection_args, device_summary, resolve_target_devices,
                            resolve_token)
 
 

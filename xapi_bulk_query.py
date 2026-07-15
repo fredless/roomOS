@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Frederick W. Nielsen
 #
-# This file is part of roomOS.
+# This file is part of xAPI tools.
 #
-# roomOS is free software: you can redistribute it and/or modify
+# xAPI tools is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# roomOS is distributed in the hope that it will be useful,
+# xAPI tools is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with roomOS.  If not, see <https://www.gnu.org/licenses/>.
+# along with xAPI tools.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-roomos_bulk_query.py
+xapi_bulk_query.py
 
 Query xStatus and/or xConfiguration values across a filtered set of RoomOS devices in your
 Webex org (cloud xAPI) and export the results to CSV. Cloud-only -- there is no local mode.
 
-Scope the devices the standard fleet-tool way (shared with roomOS_find_device.py and
-roomOS_apply_config.py): explicit --device-id (repeatable), --stdin (ids one per line,
+Scope the devices the standard fleet-tool way (shared with xapi_find_device.py and
+xapi_apply_config.py): explicit --device-id (repeatable), --stdin (ids one per line,
 pipeable), --name search with interactive pick, and/or any combination of:
   --model        product name, supports shell wildcards (e.g. "*Desk*", "Room Bar")
   --kind         personal | workspace  (whether the device is assigned to a person or a space)
@@ -58,7 +58,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional
 
-from roomos_common import (add_selection_args, resolve_target_devices, resolve_token,
+from xapi_common import (add_selection_args, resolve_target_devices, resolve_token,
                            xapi_status, xconfig_get)
 
 NULL = "(null)"

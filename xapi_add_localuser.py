@@ -1,28 +1,28 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Frederick W. Nielsen
 #
-# This file is part of roomOS.
+# This file is part of xAPI tools.
 #
-# roomOS is free software: you can redistribute it and/or modify
+# xAPI tools is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# roomOS is distributed in the hope that it will be useful,
+# xAPI tools is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with roomOS.  If not, see <https://www.gnu.org/licenses/>.
+# along with xAPI tools.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-roomos_add_localuser.py
+xapi_add_localuser.py
 
 Create a local admin user on one or more RoomOS devices via Webex Cloud xAPI
 (xCommand UserManagement User Add). Cloud-only.
 
-Select the target devices the standard fleet-tool way (shared with roomOS_find_device.py):
+Select the target devices the standard fleet-tool way (shared with xapi_find_device.py):
 --name search with an interactive pick (the classic single-device flow), explicit
 --device-id (repeatable), --stdin (ids one per line, pipeable), or the
 --model/--kind/--type/--platform/--connection filters for a whole fleet slice.
@@ -34,7 +34,7 @@ separate "local login" flag. The only login-channel option is ShellLogin (SSH), 
 device default here. Valid roles per the RoomOS schema: Admin, Audit, User, Integrator,
 RoomControl.
 
-Usage: roomOS_add_localuser.py --name "<device search>" --username <user>
+Usage: xapi_add_localuser.py --name "<device search>" --username <user>
        [--password <pw> | --generate-password] [-y]
 
 With --generate-password (-g) a strong random passphrase is generated and printed to stdout
@@ -52,7 +52,7 @@ import secrets
 import string
 import sys
 
-from roomos_common import (add_selection_args, confirmed, device_summary,
+from xapi_common import (add_selection_args, confirmed, device_summary,
                            resolve_target_devices, resolve_token, xapi_command)
 
 _PASSWORD_SYMBOLS = "!@#$%^*-_=+"

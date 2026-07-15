@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Frederick W. Nielsen
 #
-# This file is part of roomOS.
+# This file is part of xAPI tools.
 #
-# roomOS is free software: you can redistribute it and/or modify
+# xAPI tools is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# roomOS is distributed in the hope that it will be useful,
+# xAPI tools is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with roomOS.  If not, see <https://www.gnu.org/licenses/>.
+# along with xAPI tools.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-roomos_macro_logger.py
+xapi_macro_logger.py
 
 Tail Cisco RoomOS macro logs and print to stdout in columns.
 
@@ -49,7 +49,7 @@ from typing import Dict, List, Tuple
 
 import paramiko
 
-from roomos_common import connect_ssh, resolve_device_id, resolve_token, xapi_command
+from xapi_common import connect_ssh, resolve_device_id, resolve_token, xapi_command
 
 
 END_MARKER = "** end"
@@ -332,7 +332,7 @@ def main() -> int:
 
     # ---- cloud subcommand ----
     ap_cloud = sub.add_parser("cloud", help="Monitor via Webex Cloud xAPI (polling)")
-    ap_cloud.add_argument("--device-id", help="Webex deviceId of the codec (or set ROOMOS_DEVICE_ID)")
+    ap_cloud.add_argument("--device-id", help="Webex deviceId of the codec (or set XAPI_DEVICE_ID)")
     ap_cloud.add_argument("--token", help="Webex access token (omit to prompt)")
     ap_cloud.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
     ap_cloud.add_argument("--timeout", type=int, default=15, help="HTTP timeout seconds (default: 15)")
@@ -431,7 +431,7 @@ def main() -> int:
         token = resolve_token(args.token)
         device_id = resolve_device_id(args.device_id)
         if not device_id:
-            print("ERROR: device id required: pass --device-id or set ROOMOS_DEVICE_ID",
+            print("ERROR: device id required: pass --device-id or set XAPI_DEVICE_ID",
                   file=sys.stderr)
             return 2
 

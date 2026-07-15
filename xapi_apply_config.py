@@ -1,23 +1,23 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Frederick W. Nielsen
 #
-# This file is part of roomOS.
+# This file is part of xAPI tools.
 #
-# roomOS is free software: you can redistribute it and/or modify
+# xAPI tools is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# roomOS is distributed in the hope that it will be useful,
+# xAPI tools is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with roomOS.  If not, see <https://www.gnu.org/licenses/>.
+# along with xAPI tools.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-roomOS_apply_config.py
+xapi_apply_config.py
 
 Apply xConfiguration changes to one or many RoomOS devices via the Webex device
 configurations API (PATCH /v1/deviceConfigurations, JSON Patch). Cloud-only. There is no
@@ -48,7 +48,7 @@ that are not editable, and keys already at the desired value are dropped (counts
 --verbose lists them), and only the remaining changes are patched. --set/--remove are always
 applied verbatim on top and override the file for the same key.
 
-Select the target devices the standard fleet-tool way (see also roomOS_find_device.py):
+Select the target devices the standard fleet-tool way (see also xapi_find_device.py):
   --device-id ID (repeatable), --stdin (ids one per line, pipeable), the
   --model/--kind/--type/--platform/--connection filters, or --name search with an
   interactive pick (--all to take every match).
@@ -73,7 +73,7 @@ import re
 import sys
 from typing import Any, Dict, List, Tuple
 
-from roomos_common import (add_selection_args, confirmed, device_summary, parse_kv,
+from xapi_common import (add_selection_args, confirmed, device_summary, parse_kv,
                            resolve_target_devices, resolve_token, xconfig_get_items,
                            xconfig_patch)
 

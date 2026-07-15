@@ -1,30 +1,30 @@
 #!/usr/bin/env python3
 # Copyright (C) 2026 Frederick W. Nielsen
 #
-# This file is part of roomOS.
+# This file is part of xAPI tools.
 #
-# roomOS is free software: you can redistribute it and/or modify
+# xAPI tools is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
 # the Free Software Foundation, either version 3 of the License, or
 # (at your option) any later version.
 #
-# roomOS is distributed in the hope that it will be useful,
+# xAPI tools is distributed in the hope that it will be useful,
 # but WITHOUT ANY WARRANTY; without even the implied warranty of
 # MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 # GNU General Public License for more details.
 #
 # You should have received a copy of the GNU General Public License
-# along with roomOS.  If not, see <https://www.gnu.org/licenses/>.
+# along with xAPI tools.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-roomOS_backup_config.py
+xapi_backup_config.py
 
 Export the full xConfiguration of one or more RoomOS devices via the Webex device
 configurations API. Cloud-only. The output uses the same format as the codec web UI's
 backup file ("Audio DefaultVolume: 60" lines, freeform strings quoted, enums bare), so it
-feeds straight back into roomOS_apply_config.py --file -- a backup/restore pair.
+feeds straight back into xapi_apply_config.py --file -- a backup/restore pair.
 
-Select the target devices the standard fleet-tool way (see roomOS_find_device.py).
+Select the target devices the standard fleet-tool way (see xapi_find_device.py).
 A single device prints to stdout by default. Multiple devices always write one file per
 device (concatenated backups would be useless), named:
 
@@ -50,7 +50,7 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, TextIO
 
-from roomos_common import (add_selection_args, resolve_target_devices, resolve_token,
+from xapi_common import (add_selection_args, resolve_target_devices, resolve_token,
                            xconfig_get_items)
 
 _INDEXED_PART_RE = re.compile(r"^(?P<name>.+)\[(?P<idx>\d+)\]$")
@@ -123,7 +123,7 @@ def main() -> int:
     """export the full xConfiguration of selected devices (cloud only)"""
     ap = argparse.ArgumentParser(
         description="Export the full xConfiguration of selected RoomOS devices in the "
-                    "codec backup format (restorable with roomOS_apply_config.py --file).",
+                    "codec backup format (restorable with xapi_apply_config.py --file).",
     )
     ap.add_argument("--token", help="Webex access token (omit to read config / prompt)")
     ap.add_argument("--base-url", default="https://webexapis.com", help="Webex API base URL")
