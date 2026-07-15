@@ -30,10 +30,14 @@ Choose the changes with repeatable flags (keys use RoomOS dot notation, CASE-SEN
   --file <path>                     apply every setting from a codec config export
 Values that look like integers are sent as integers, everything else as strings.
 
---file accepts either export format and auto-detects which one it got:
-  * the codec web UI's backup file ("Audio DefaultVolume: 60" lines), or
+--file accepts any of these formats and auto-detects which one it got:
+  * the codec web UI's backup file ("Audio DefaultVolume: 60" lines),
   * a CLI/SSH session dump ("*c xConfiguration Audio DefaultVolume: 50" lines; all other
-    session output -- banners, OK/ERROR, xcommand echoes -- is ignored).
+    session output -- banners, OK/ERROR, xcommand echoes -- is ignored), or
+  * a hand-written paste-into-terminal file ("xConfiguration Audio DefaultVolume: 60").
+Like the codec CLI, file input is case-INsensitive ("xconfiguration audio defaultvolume: 60"
+works); since the cloud API is case-sensitive, keys are rewritten to each device's canonical
+casing and enum/boolean values are normalized from the device's valuespace during validation.
 Space-separated paths become API keys with instance indexes ("Audio Input HDMI 1 Gain" ->
 Audio.Input.HDMI[1].Gain). Quoted values stay strings, unquoted numbers become integers, and
 masked secrets ("***") are skipped. Because a JSON Patch is all-or-nothing per device, file
@@ -70,8 +74,10 @@ from roomos_common import (add_selection_args, confirmed, device_summary, parse_
                            resolve_target_devices, resolve_token, xconfig_get_items,
                            xconfig_patch)
 
-# a config line from an interactive CLI/SSH session dump starts with this marker
-_CLI_PREFIX = "*c xConfiguration "
+# a config line in CLI style: "*c xConfiguration ..." (session dump) or a bare
+# "xConfiguration ..." (hand-written paste-into-terminal file). The codec CLI is
+# case-insensitive, so hand-produced files may use any casing.
+_CLI_LINE_RE = re.compile(r"^(?:\*c\s+)?xconfiguration\s+(.+)$", re.IGNORECASE)
 
 # path tokens in the export formats: PascalCase words, digits (instance indexes), underscores
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_]+$")
@@ -117,14 +123,15 @@ def dot_key(tokens: List[str]) -> str:
 def parse_config_file(path: str) -> Tuple[List[Tuple[str, Any]], int, int]:
     """Parse a codec config export into (key, value) settings.
 
-    Auto-detects the format: if any line carries the '*c xConfiguration' marker the file is
-    a CLI session dump and only those lines are read; otherwise it is a web-UI backup and
-    every 'Path Words: value' line is read. Quoted values stay strings, unquoted integers
+    Auto-detects the format: if any line is CLI-style ('*c xConfiguration ...' from a
+    session dump, or a bare 'xConfiguration ...' as hand-written for terminal paste, any
+    case) only those lines are read; otherwise the file is a web-UI backup and every
+    'Path Words: value' line is read. Quoted values stay strings, unquoted integers
     become ints. Returns (settings, masked_skipped, ignored_lines).
     """
     with open(path, encoding="utf-8-sig") as fh:
         lines = [line.strip() for line in fh]
-    cli_mode = any(line.startswith(_CLI_PREFIX) for line in lines)
+    cli_mode = any(_CLI_LINE_RE.match(line) for line in lines)
 
     settings: List[Tuple[str, Any]] = []
     masked = 0
@@ -133,10 +140,11 @@ def parse_config_file(path: str) -> Tuple[List[Tuple[str, Any]], int, int]:
         if not line:
             continue
         if cli_mode:
-            if not line.startswith(_CLI_PREFIX):
+            m = _CLI_LINE_RE.match(line)
+            if not m:
                 ignored += 1
                 continue
-            line = line[len(_CLI_PREFIX):]
+            line = m.group(1)
         head, sep, raw = line.partition(":")
         tokens = head.split()
         if not sep or not tokens or not all(_TOKEN_RE.match(t) for t in tokens):
@@ -154,25 +162,31 @@ def parse_config_file(path: str) -> Tuple[List[Tuple[str, Any]], int, int]:
     return settings, masked, ignored
 
 
-def validate_file_ops(file_desired: Dict[str, Any], device: Dict[str, Any], token: str,
-                      base_url: str, timeout: int,
+def validate_file_ops(file_desired: Dict[str, Tuple[str, Any]], device: Dict[str, Any],
+                      token: str, base_url: str, timeout: int,
                       verbose: bool) -> Tuple[List[Dict[str, Any]], str]:
     """Filter file settings against one device's actual configuration set.
 
     Drops keys the device does not have, keys that are not editable, and keys already at
     the desired value, so the atomic JSON Patch only carries changes that can succeed.
+    File input may be any case (the codec CLI is case-insensitive) but the cloud API is
+    case-SENSITIVE, so keys are matched case-insensitively and rewritten to the device's
+    canonical casing; enum and boolean values are normalized from the item's valueSpace.
+    file_desired maps lowercased key -> (key as written in the file, value).
     Returns (ops, summary_text).
     """
     items = xconfig_get_items(device["id"], token, base_url, timeout)
+    canonical = {k.lower(): k for k in items}
     ops: List[Dict[str, Any]] = []
     missing = readonly = unchanged = 0
-    for key, value in file_desired.items():
-        item = items.get(key)
-        if item is None:
+    for lower_key, (file_key, value) in file_desired.items():
+        key = canonical.get(lower_key)
+        if key is None:
             missing += 1
             if verbose:
-                print(f"    - {key}: not on this device", file=sys.stderr)
+                print(f"    - {file_key}: not on this device", file=sys.stderr)
             continue
+        item = items[key]
         editability = (item.get("sources", {}).get("configured", {})
                        .get("editability", {}))
         if not editability.get("isEditable"):
@@ -181,6 +195,14 @@ def validate_file_ops(file_desired: Dict[str, Any], device: Dict[str, Any], toke
                 print(f"    - {key}: not editable"
                       f" ({editability.get('reason', 'no reason given')})", file=sys.stderr)
             continue
+        value_space = item.get("valueSpace", {})
+        if isinstance(value, str):
+            for option in value_space.get("enum") or []:
+                if isinstance(option, str) and option.lower() == value.lower():
+                    value = option
+                    break
+            if value_space.get("type") == "boolean" and value.lower() in ("true", "false"):
+                value = value.lower() == "true"
         if str(item.get("value")) == str(value):
             unchanged += 1
             continue
@@ -223,19 +245,22 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
-        # settings from --file exports (later files and explicit flags win per key)
-        file_desired: Dict[str, Any] = {}
+        # settings from --file exports, keyed by lowercased key so case variants of the
+        # same setting dedupe (later files and explicit flags win per key)
+        file_desired: Dict[str, Tuple[str, Any]] = {}
         for path in args.file:
             settings, masked, ignored = parse_config_file(path)
             print(f"{os.path.basename(path)}: {len(settings)} setting(s)"
                   + (f", {masked} masked secret(s) skipped" if masked else "")
                   + (f", {ignored} non-config line(s) ignored" if ignored else ""),
                   file=sys.stderr)
-            file_desired.update(settings)
+            for key, value in settings:
+                file_desired[key.lower()] = (key, value)
 
         explicit_ops = build_ops(args.set, args.remove)
         for op in explicit_ops:
-            file_desired.pop(op["path"].removesuffix("/sources/configured/value"), None)
+            key = op["path"].removesuffix("/sources/configured/value")
+            file_desired.pop(key.lower(), None)
 
         if not file_desired and not explicit_ops:
             print("ERROR: specify at least one --set, --remove, or --file change",
