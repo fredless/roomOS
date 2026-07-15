@@ -16,16 +16,16 @@ pip install paramiko requests pyyaml
 
 **Cloud mode** needs a Webex token and a target device:
 
-- **Token** — read from `~/Personal-Local/config.yml` (the same file the sibling Cisco Collab repo uses), or passed with `--token`:
+- **Token** — read from `~/Personal-Local/config.yml` (the same file\value the sibling [ciscoCloudCollabTools](https://github.com/fredless/ciscoCollabCloudTools)repo also uses), or passed with `--token`:
 
   ```yaml
   wxteams:
     auth_token: <a Webex access token>
   ```
 
-  (On Windows that's `C:\Users\<you>\Personal-Local\config.yml`.) The token needs the Cloud xAPI scopes **`spark:xapi_statuses`** and **`spark:xapi_commands`** — these are **not** included in `spark:all` and must be added to the integration explicitly (a token without them gets a `403` on xStatus/xCommand calls). Reading device configurations (`xapi_bulk_query.py --config`) and listing devices instead use admin device scopes such as `spark-admin:devices_read`; writing them (`xapi_apply_config.py`) needs `spark-admin:devices_write`.
+  The token needs the Cloud xAPI scopes **`spark:xapi_statuses`** and **`spark:xapi_commands`**. Reading device configurations (`xapi_bulk_query.py --config`) and listing devices instead use admin\WCH device scopes such as `spark-admin:devices_read`; writing them (`xapi_apply_config.py`) needs `spark-admin:devices_write`.
 
-- **Device ID** — supplied per run, since it changes often during a session: pass **`--device-id <id>`**, or set the **`XAPI_DEVICE_ID`** environment variable as a session default (`--device-id` overrides it). It is intentionally *not* stored in `config.yml`.
+- **Device ID** — base64 encoded, supplied per run, since it changes often during a session: pass **`--device-id <id>`**, or set the **`XAPI_DEVICE_ID`** environment variable as a session default (`--device-id` overrides it). It is intentionally *not* stored in `config.yml`.
 
 **Local mode** needs no config file — pass `--host`, `--username`, and `--password` (omit to be prompted) or `--key`, plus optional `--port`/`--timeout`.
 
@@ -37,7 +37,7 @@ pip install paramiko requests pyyaml
 
 ## Fleet tools and piping
 
-The org-wide (fleet) tools share the same device-selection priority, in precedence order:
+The org-wide (fleet) tools share the same device-selection priority as follows:
 
 1. `--device-id <id>` — explicit id(s), repeatable
 2. `--stdin` — ids read one per line from stdin (pipe from `xapi_find_device.py`)
