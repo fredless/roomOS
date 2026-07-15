@@ -33,8 +33,10 @@ Values that look like integers are sent as integers, everything else as strings.
 --file accepts any of these formats and auto-detects which one it got:
   * the codec web UI's backup file ("Audio DefaultVolume: 60" lines),
   * a CLI/SSH session dump ("*c xConfiguration Audio DefaultVolume: 50" lines; all other
-    session output -- banners, OK/ERROR, xcommand echoes -- is ignored), or
-  * a hand-written paste-into-terminal file ("xConfiguration Audio DefaultVolume: 60").
+    session output -- banners, OK/ERROR, xcommand echoes -- is ignored),
+  * a hand-written paste-into-terminal file ("xConfiguration Audio DefaultVolume: 60"), or
+  * a Control Hub configuration-template CSV export (Devices > Templates > download);
+    rows with "Follow default" true revert that config to the device default.
 Like the codec CLI, file input is case-INsensitive ("xconfiguration audio defaultvolume: 60"
 works); since the cloud API is case-sensitive, keys are rewritten to each device's canonical
 casing and enum/boolean values are normalized from the device's valuespace during validation.
@@ -64,6 +66,7 @@ spark-admin:devices_write (and spark-admin:devices_read to list/select devices).
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import re
@@ -85,6 +88,10 @@ _TOKEN_RE = re.compile(r"^[A-Za-z0-9_]+$")
 # strictly digits only -- int() would also accept "3840_2160_30" (underscore separators)
 # and silently mangle enum values like resolutions into integers
 _INT_RE = re.compile(r"^-?[0-9]+$")
+
+# marks a Control Hub template row with "Follow default" set: revert the config to its
+# device default (a JSON Patch "remove") instead of setting a value
+_FOLLOW_DEFAULT = object()
 
 
 def coerce_value(value: str) -> Any:
@@ -120,17 +127,48 @@ def dot_key(tokens: List[str]) -> str:
     return ".".join(parts)
 
 
+def parse_template_csv(lines: List[str]) -> Tuple[List[Tuple[str, Any]], int, int]:
+    """Parse a Control Hub configuration-template CSV export.
+
+    Columns: Configuration name (dotted key), Value, Follow default. A "Follow default"
+    of true maps to the _FOLLOW_DEFAULT sentinel (revert to default on apply). Values
+    stay strings here; type coercion happens against each device's valuespace during
+    validation, since this CSV quotes everything and carries no type information.
+    """
+    settings: List[Tuple[str, Any]] = []
+    ignored = 0
+    for row in csv.reader(lines):
+        cells = [cell.strip() for cell in row]
+        if not cells or not cells[0]:
+            continue
+        low = cells[0].lower()
+        if low.startswith("sep=") or low == "configuration name":
+            continue
+        if len(cells) < 2:
+            ignored += 1
+            continue
+        follow = len(cells) >= 3 and cells[2].lower() == "true"
+        settings.append((cells[0], _FOLLOW_DEFAULT if follow else cells[1]))
+    return settings, 0, ignored
+
+
 def parse_config_file(path: str) -> Tuple[List[Tuple[str, Any]], int, int]:
     """Parse a codec config export into (key, value) settings.
 
-    Auto-detects the format: if any line is CLI-style ('*c xConfiguration ...' from a
-    session dump, or a bare 'xConfiguration ...' as hand-written for terminal paste, any
-    case) only those lines are read; otherwise the file is a web-UI backup and every
+    Auto-detects the format: a 'sep=' or 'Configuration name' first line means a Control
+    Hub template CSV; if any line is CLI-style ('*c xConfiguration ...' from a session
+    dump, or a bare 'xConfiguration ...' as hand-written for terminal paste, any case)
+    only those lines are read; otherwise the file is a web-UI backup and every
     'Path Words: value' line is read. Quoted values stay strings, unquoted integers
     become ints. Returns (settings, masked_skipped, ignored_lines).
     """
     with open(path, encoding="utf-8-sig") as fh:
         lines = [line.strip() for line in fh]
+
+    first = next((line for line in lines if line), "")
+    if first.lower().startswith("sep=") or first.lower().startswith("configuration name,"):
+        return parse_template_csv(lines)
+
     cli_mode = any(_CLI_LINE_RE.match(line) for line in lines)
 
     settings: List[Tuple[str, Any]] = []
@@ -195,6 +233,14 @@ def validate_file_ops(file_desired: Dict[str, Tuple[str, Any]], device: Dict[str
                 print(f"    - {key}: not editable"
                       f" ({editability.get('reason', 'no reason given')})", file=sys.stderr)
             continue
+        if value is _FOLLOW_DEFAULT:
+            # template says "follow default": remove the configured override if one exists
+            if item.get("sources", {}).get("configured", {}).get("value") is None:
+                unchanged += 1
+                continue
+            ops.append({"op": "remove",
+                        "path": f"{key}/sources/configured/value"})
+            continue
         value_space = item.get("valueSpace", {})
         if isinstance(value, str):
             for option in value_space.get("enum") or []:
@@ -203,6 +249,8 @@ def validate_file_ops(file_desired: Dict[str, Tuple[str, Any]], device: Dict[str
                     break
             if value_space.get("type") == "boolean" and value.lower() in ("true", "false"):
                 value = value.lower() == "true"
+            if value_space.get("type") == "integer" and _INT_RE.match(value.strip()):
+                value = int(value)
         if str(item.get("value")) == str(value):
             unchanged += 1
             continue
@@ -231,8 +279,9 @@ def main() -> int:
     ap.add_argument("--remove", action="append", default=[], metavar="KEY",
                     help="Clear a configured value, reverting it to default (repeatable)")
     ap.add_argument("--file", action="append", default=[], metavar="PATH",
-                    help="Apply every setting from a codec config export: web UI backup "
-                         "or CLI session dump, auto-detected (repeatable)")
+                    help="Apply every setting from a config export: web UI backup, CLI "
+                         "session dump, or Control Hub template CSV, auto-detected "
+                         "(repeatable)")
     ap.add_argument("--dry-run", action="store_true",
                     help="Show what would be applied per device without changing anything")
     ap.add_argument("-y", "--yes", action="store_true",
