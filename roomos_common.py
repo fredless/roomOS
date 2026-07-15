@@ -25,9 +25,12 @@ pieces it needs so this logic lives in exactly one place.
 
 from __future__ import annotations
 
+import argparse
+import fnmatch
 import getpass
 import os
 import re
+import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -97,6 +100,188 @@ def parse_kv(items: List[str], flag: str = "--kv") -> List[Tuple[str, str]]:
             raise ValueError(f"Invalid {flag} '{item}': empty key.")
         out.append((k, v))
     return out
+
+
+# ------------------------------------------------------------------
+# Device selection (shared producer/consumer contract for the fleet tools)
+#
+# Every fleet tool selects its target devices the same way, in precedence order:
+#   1. --device-id <id>       explicit id(s), repeatable
+#   2. --stdin                ids read one per line from stdin (pipe from roomOS_find_device.py)
+#   3. filter flags           --model/--kind/--type/--platform/--connection (all matches)
+#   4. --name <term>          display-name search; interactive pick if several match
+#   5. ROOMOS_DEVICE_ID env   session-default single device
+# Selection UI and progress always go to stderr so stdout stays clean for piping.
+# ------------------------------------------------------------------
+
+# friendly --connection aliases mapped to the raw Webex connectionStatus values they cover
+CONNECTION_ALIASES = {
+    "online": {"connected", "connected_with_issues"},
+    "offline": {"disconnected", "offline_expired", "offline_deep_sleep", "offline_temporarily"},
+    "expired": {"offline_expired"},
+}
+
+
+def device_kind(device: Dict[str, Any]) -> str:
+    """Return 'personal' (assigned to a person), 'workspace', or '' (neither)."""
+    if device.get("personId"):
+        return "personal"
+    if device.get("workspaceId"):
+        return "workspace"
+    return ""
+
+
+def expand_connections(values: List[str]) -> set:
+    """Expand --connection terms (aliases or raw) into a set of raw connectionStatus values."""
+    accepted: set = set()
+    for value in values:
+        low = value.lower()
+        accepted |= {v.lower() for v in CONNECTION_ALIASES.get(low, {low})}
+    return accepted
+
+
+def matches_filters(device: Dict[str, Any], models: List[str], kinds: List[str],
+                    types: List[str], platforms: List[str], connections: set) -> bool:
+    """Apply the model / kind / type / platform / connection filters (all client-side)."""
+    if models:
+        product = (device.get("product") or "").lower()
+        if not any(fnmatch.fnmatch(product, m.lower()) for m in models):
+            return False
+    if kinds and device_kind(device) not in kinds:
+        return False
+    if types and (device.get("type") or "").lower() not in [t.lower() for t in types]:
+        return False
+    if platforms and (device.get("devicePlatform") or "").lower() not in [p.lower() for p in platforms]:
+        return False
+    if connections and (device.get("connectionStatus") or "").lower() not in connections:
+        return False
+    return True
+
+
+def find_devices_by_name(devices: List[Dict[str, Any]], term: str) -> List[Dict[str, Any]]:
+    """Case-insensitive match of a search term against device displayName (wildcards allowed)."""
+    t = term.lower()
+    pattern = t if any(ch in t for ch in "*?[") else f"*{t}*"
+    return [d for d in devices if fnmatch.fnmatch((d.get("displayName") or "").lower(), pattern)]
+
+
+def device_summary(device: Dict[str, Any]) -> str:
+    """One-line human summary of a device for selection lists and progress messages."""
+    return (f"{device.get('displayName', '')}  "
+            f"[{device.get('product', '')}, {device.get('connectionStatus', '')}]")
+
+
+def console_input(prompt: str) -> str:
+    """Prompt on stderr and read a reply from the console, even when stdio is piped.
+
+    stdout may be a pipe (this tool is a producer) and stdin may be a pipe (--stdin consumer),
+    so the prompt goes to stderr and, when stdin is not a terminal, the reply is read straight
+    from the console device (CONIN$ on Windows, /dev/tty elsewhere). Raises EOFError when no
+    console is available (fully non-interactive run).
+    """
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    if sys.stdin.isatty():
+        return input()
+    console = "CONIN$" if os.name == "nt" else "/dev/tty"
+    try:
+        with open(console, encoding="utf-8") as fh:
+            line = fh.readline()
+    except OSError as e:
+        raise EOFError(f"no interactive console available: {e}") from e
+    if not line:
+        raise EOFError("no interactive console available")
+    return line.rstrip("\r\n")
+
+
+def choose_device(matches: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Print a numbered device list and prompt for a selection; return the choice or None."""
+    for i, d in enumerate(matches, 1):
+        print(f"  {i}. {device_summary(d)}", file=sys.stderr)
+    try:
+        raw = console_input(f"Select device [1-{len(matches)}] (blank to cancel): ").strip()
+    except EOFError:
+        print("No console available for the interactive pick -- "
+              "use --all, filters, or --device-id instead.", file=sys.stderr)
+        return None
+    if raw.isdigit() and 1 <= int(raw) <= len(matches):
+        return matches[int(raw) - 1]
+    return None
+
+
+def confirmed(question: str) -> bool:
+    """Ask a yes/no question on the console. Raises EOFError if no console is available."""
+    return console_input(f"{question} (y/n): ").strip().lower() in ("y", "yes")
+
+
+def add_selection_args(ap: argparse.ArgumentParser) -> None:
+    """Add the shared device-selection flags every fleet tool accepts."""
+    sel = ap.add_argument_group("device selection")
+    sel.add_argument("--device-id", action="append", default=[], metavar="ID",
+                     help="Target device id; repeatable (skips search/filters)")
+    sel.add_argument("--stdin", action="store_true",
+                     help="Read device ids from stdin, one per line "
+                          "(pipe from roomOS_find_device.py)")
+    sel.add_argument("--name", metavar="TERM",
+                     help="Device display-name search term (wildcards allowed); "
+                          "prompts to pick when several match")
+    sel.add_argument("--all", action="store_true",
+                     help="With --name: act on every match instead of prompting to pick one")
+    sel.add_argument("--model", action="append", default=[],
+                     help="Filter by product name; wildcards allowed, e.g. '*Desk*' (repeatable)")
+    sel.add_argument("--kind", action="append", default=[], choices=["personal", "workspace"],
+                     help="Filter by assignment: personal or workspace (repeatable)")
+    sel.add_argument("--type", action="append", default=[],
+                     help="Filter by device type, e.g. roomdesk, accessory, phone (repeatable)")
+    sel.add_argument("--platform", action="append", default=[],
+                     help="Filter by device platform, e.g. cisco (repeatable)")
+    sel.add_argument("--connection", action="append", default=[],
+                     help="Filter by status: online/offline/expired or a raw connectionStatus "
+                          "value (repeatable)")
+
+
+def resolve_target_devices(args: argparse.Namespace, token: str, base_url: str, timeout: int,
+                           default_all: bool = False) -> List[Dict[str, Any]]:
+    """Resolve the flags added by add_selection_args() to a list of device dicts.
+
+    Precedence: --device-id / --stdin (combined) -> filters (+ optional --name narrowing,
+    interactive pick unless --all) -> ROOMOS_DEVICE_ID env. With default_all=True, no
+    selection at all means every device in the org. Returns [] when a pick is cancelled
+    or nothing matches; raises ValueError when no selection was given at all.
+    """
+    ids = list(args.device_id)
+    if args.stdin:
+        ids += [line.strip() for line in sys.stdin if line.strip()]
+    if args.device_id or args.stdin:
+        return [get_device(i, token, base_url, timeout) for i in ids]
+
+    has_filters = any([args.model, args.kind, args.type, args.platform, args.connection])
+    if not has_filters and not args.name:
+        env_id = os.environ.get(DEVICE_ID_ENV)
+        if env_id:
+            return [get_device(env_id, token, base_url, timeout)]
+        if not (default_all or args.all):
+            raise ValueError("no device selection given: use --device-id, --stdin, "
+                             "filter flags, or --name (see --help)")
+
+    print("Listing devices...", file=sys.stderr)
+    devices = list_devices(token, base_url, timeout)
+    connections = expand_connections(args.connection)
+    matched = [d for d in devices
+               if matches_filters(d, args.model, args.kind, args.type, args.platform, connections)]
+    if args.name:
+        matched = find_devices_by_name(matched, args.name)
+    print(f"{len(matched)} of {len(devices)} device(s) match.", file=sys.stderr)
+    if not matched:
+        return []
+
+    if args.name and not args.all:
+        if len(matched) == 1:
+            print(f"One match: {device_summary(matched[0])}", file=sys.stderr)
+            return matched
+        device = choose_device(matched)
+        return [device] if device else []
+    return matched
 
 
 # ------------------------------------------------------------------
@@ -281,6 +466,38 @@ def list_devices(token: str, base_url: str, timeout: int,
             break
         start += len(items)
     return devices
+
+
+def get_device(device_id: str, token: str, base_url: str, timeout: int) -> Dict[str, Any]:
+    """GET /v1/devices/<id>; return the device detail dict."""
+    url = f"{base_url.rstrip('/')}/v1/devices/{device_id}"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    resp = requests.get(url, headers=headers, timeout=timeout)
+    if not resp.ok:
+        raise RuntimeError(f"Device lookup failed for {device_id}: "
+                           f"HTTP {resp.status_code} - {resp.text}")
+    return resp.json()
+
+
+def xconfig_patch(ops: List[Dict[str, Any]], device_id: str, token: str,
+                  base_url: str, timeout: int) -> Dict[str, Any]:
+    """PATCH /v1/deviceConfigurations (JSON Patch) for one device; return the JSON result.
+
+    Each op is {"op": "replace"|"remove", "path": "<Config.Path>/sources/configured/value",
+    "value": ...} ("remove" reverts the config to its default). Many ops per call are fine,
+    but the API takes exactly one deviceId per call. Needs spark-admin:devices_write.
+    """
+    url = f"{base_url.rstrip('/')}/v1/deviceConfigurations"
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json-patch+json",
+        "Accept": "application/json",
+    }
+    resp = requests.patch(url, headers=headers, params={"deviceId": device_id},
+                          json=ops, timeout=timeout)
+    if not resp.ok:
+        raise RuntimeError(f"Config patch failed: HTTP {resp.status_code} - {resp.text}")
+    return resp.json() if resp.text.strip() else {}
 
 
 def xconfig_get(key: str, device_id: str, token: str, base_url: str, timeout: int) -> Any:
