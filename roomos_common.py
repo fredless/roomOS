@@ -500,6 +500,25 @@ def xconfig_patch(ops: List[Dict[str, Any]], device_id: str, token: str,
     return resp.json() if resp.text.strip() else {}
 
 
+def xconfig_get_items(device_id: str, token: str, base_url: str, timeout: int,
+                      key: Optional[str] = None) -> Dict[str, Any]:
+    """GET /v1/deviceConfigurations for a device; return the full items dict.
+
+    Each item carries value/sources/valueSpace detail. Without a key, every
+    configuration on the device is returned. Needs spark-admin:devices_read.
+    """
+    url = f"{base_url.rstrip('/')}/v1/deviceConfigurations"
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    params: Dict[str, Any] = {"deviceId": device_id}
+    if key:
+        params["key"] = key
+    resp = requests.get(url, headers=headers, params=params, timeout=timeout)
+    if not resp.ok:
+        raise RuntimeError(f"Config query failed: HTTP {resp.status_code} - {resp.text}")
+    items = (resp.json() or {}).get("items", {})
+    return items if isinstance(items, dict) else {}
+
+
 def xconfig_get(key: str, device_id: str, token: str, base_url: str, timeout: int) -> Any:
     """GET a single xConfiguration value via /v1/deviceConfigurations; None if absent."""
     url = f"{base_url.rstrip('/')}/v1/deviceConfigurations"
