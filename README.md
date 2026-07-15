@@ -55,6 +55,9 @@ python roomOS_find_device.py --name lobby | python roomOS_apply_config.py --stdi
 python roomOS_find_device.py --model "*Desk Pro*" --connection online > ids.txt
 Get-Content ids.txt | python roomOS_bulk_query.py --stdin --status SystemUnit.Uptime
 Get-Content ids.txt | python roomOS_add_localuser.py --stdin --username svc-av -g -y
+
+# take a timestamped config backup of every Room Bar before touching anything
+python roomOS_find_device.py --model "Room Bar*" | python roomOS_backup_config.py --stdin --save backups
 ```
 
 Tools that change devices (`apply_config`, `add_localuser`) confirm before acting; pass `-y`/`--yes` for non-interactive runs (required when no console is available). Reconfiguring a thousand codecs at once is a thrill best experienced on purpose.
@@ -65,12 +68,13 @@ Tools that change devices (`apply_config`, `add_localuser`) confirm before actin
 | --- | --- |
 | [roomOS_add_localuser.py](roomOS_add_localuser.py) | Create a local admin user on the selected device(s) via `xCommand UserManagement User Add`; can auto-generate the passphrase (`-g`) and print it (cloud only). |
 | [roomOS_apply_config.py](roomOS_apply_config.py) | Apply xConfiguration changes (`--set key=value`, `--remove key`, or `--file <codec config export>` — web UI backup, CLI session dump, or hand-written `xConfiguration` lines in any case; auto-detected and validated per device) to the selected device(s) via the device configurations API (JSON Patch); `--dry-run` previews (cloud only). |
+| [roomOS_backup_config.py](roomOS_backup_config.py) | Export the full xConfiguration of the selected device(s) in the codec backup format — one device to stdout, several to per-device `<name>_<serial>_<timestamp>.txt` files; `--configured-only` for just the explicit overrides. Restorable with `roomOS_apply_config.py --file` (cloud only). |
 | [roomOS_bulk_query.py](roomOS_bulk_query.py) | Query xStatus/xConfiguration values across the selected device(s) and export to CSV (cloud only). |
 | [roomOS_clock_sync.py](roomOS_clock_sync.py) | Read the codec clock and optionally set the local PC clock to match (needs admin/root). |
 | [roomOS_dial.py](roomOS_dial.py) | Place a call (SIP/Spark, Video/Audio) or show current call status. |
 | [roomOS_ethernet_mics.py](roomOS_ethernet_mics.py) | Enumerate connected microphones and per-stream detail for ethernet audio inputs. |
 | [roomOS_find_device.py](roomOS_find_device.py) | Select org devices by name search (interactive pick) and/or filters and print their ids to stdout for piping into the other fleet tools (cloud only). |
-| [roomOS_macro_SSHlogger.py](roomOS_macro_SSHlogger.py) | Tail the macro log in real time (SSH `xFeedback`) or by polling (cloud `Macros.Log.Get`). |
+| [roomOS_macro_SSHlogger.py](roomOS_macro_SSHlogger.py) | Tail the macro log in real time (SSH `xFeedback`) or by polling (cloud `Macros.Log.Get`). Built as a workaround to the current implementation (as of June 2026) of Cisco's *other* current cloud logging facility in Collaboration Hub, which **will** let you down (stops outputting) when it is faced with a busy log file. But this way is also handy if you need to watch these logs on a long running basis in a side window, and don't have local\SSH access to a codec.|
 | [roomOS_notice.py](roomOS_notice.py) | Display or clear on-screen alerts and textline overlays. |
 | [roomOS_selfview.py](roomOS_selfview.py) | Toggle self-view: off, PiP thumbnail, or full-screen. |
 | [roomOS_send_message.py](roomOS_send_message.py) | Push a `Message Send` onto the macro bus (macros subscribe via `Event/Message/Send`). |
