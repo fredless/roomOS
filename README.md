@@ -32,6 +32,7 @@ pip install paramiko requests pyyaml
 ## Conventions
 
 - Repeatable command arguments use `--kv key=value` (e.g. `--kv CallType=Video`).
+- The fleet tools take `-q`/`--quiet` to suppress the progress chatter — errors, prompts, dry-run findings, generated passphrases, and written filenames still come through.
 - Cloud commands print a short human-readable summary by default; add `--json` for the raw API response.
 - xStatus/xConfiguration paths and keys are **case-sensitive** — they must match the RoomOS xAPI casing (PascalCase, e.g. `SystemUnit.Uptime`, `Audio.DefaultVolume`). A wrong-cased key may not error, mind you — the API could just return nothing and leave you to your thoughts. And an functional exception: `xapi_apply_config.py --file` input *is* case-insensitive, similar to the codec CLI — as keys and enum values are rewritten to canonical casing queried from each target device the way this is setup right now.
 

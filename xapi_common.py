@@ -216,6 +216,9 @@ def confirmed(question: str) -> bool:
 
 def add_selection_args(ap: argparse.ArgumentParser) -> None:
     """Add the shared device-selection flags every fleet tool accepts."""
+    ap.add_argument("-q", "--quiet", action="store_true",
+                    help="Suppress progress chatter; keep errors, prompts, and "
+                         "essential results only")
     sel = ap.add_argument_group("device selection")
     sel.add_argument("--device-id", action="append", default=[], metavar="ID",
                      help="Target device id; repeatable (skips search/filters)")
@@ -249,6 +252,7 @@ def resolve_target_devices(args: argparse.Namespace, token: str, base_url: str, 
     selection at all means every device in the org. Returns [] when a pick is cancelled
     or nothing matches; raises ValueError when no selection was given at all.
     """
+    quiet = getattr(args, "quiet", False)
     ids = list(args.device_id)
     if args.stdin:
         ids += [line.strip() for line in sys.stdin if line.strip()]
@@ -264,20 +268,23 @@ def resolve_target_devices(args: argparse.Namespace, token: str, base_url: str, 
             raise ValueError("no device selection given: use --device-id, --stdin, "
                              "filter flags, or --name (see --help)")
 
-    print("Listing devices...", file=sys.stderr)
+    if not quiet:
+        print("Listing devices...", file=sys.stderr)
     devices = list_devices(token, base_url, timeout)
     connections = expand_connections(args.connection)
     matched = [d for d in devices
                if matches_filters(d, args.model, args.kind, args.type, args.platform, connections)]
     if args.name:
         matched = find_devices_by_name(matched, args.name)
-    print(f"{len(matched)} of {len(devices)} device(s) match.", file=sys.stderr)
+    if not quiet:
+        print(f"{len(matched)} of {len(devices)} device(s) match.", file=sys.stderr)
     if not matched:
         return []
 
     if args.name and not args.all:
         if len(matched) == 1:
-            print(f"One match: {device_summary(matched[0])}", file=sys.stderr)
+            if not quiet:
+                print(f"One match: {device_summary(matched[0])}", file=sys.stderr)
             return matched
         device = choose_device(matched)
         return [device] if device else []

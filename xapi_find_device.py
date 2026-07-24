@@ -71,7 +71,8 @@ def main() -> int:
             return 1
 
         for device in devices:
-            print(f"  -> {device_summary(device)}", file=sys.stderr)
+            if not args.quiet:
+                print(f"  -> {device_summary(device)}", file=sys.stderr)
             print(device["id"])
         return 0
 

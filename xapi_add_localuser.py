@@ -111,9 +111,10 @@ def main() -> int:
             print("No devices selected.", file=sys.stderr)
             return 1
 
-        print(f"Target device(s) ({len(devices)}):", file=sys.stderr)
-        for device in devices:
-            print(f"  {device_summary(device)}", file=sys.stderr)
+        if not args.quiet:
+            print(f"Target device(s) ({len(devices)}):", file=sys.stderr)
+            for device in devices:
+                print(f"  {device_summary(device)}", file=sys.stderr)
 
         if not args.yes:
             try:
@@ -138,7 +139,9 @@ def main() -> int:
         failures = 0
         for index, device in enumerate(devices, 1):
             name = device.get("displayName", device.get("id", ""))
-            print(f"  [{index}/{len(devices)}] creating user on {name}...", file=sys.stderr)
+            if not args.quiet:
+                print(f"  [{index}/{len(devices)}] creating user on {name}...",
+                      file=sys.stderr)
             try:
                 xapi_command("UserManagement.User.Add", device["id"], token, arguments,
                              args.base_url, args.timeout)

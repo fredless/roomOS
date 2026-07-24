@@ -150,8 +150,9 @@ def main() -> int:
         save_dir = args.save
         if save_dir is None and len(devices) > 1:
             save_dir = "."
-            print("Multiple devices selected -- writing one backup file per device.",
-                  file=sys.stderr)
+            if not args.quiet:
+                print("Multiple devices selected -- writing one backup file per device.",
+                      file=sys.stderr)
         if save_dir:
             os.makedirs(save_dir, exist_ok=True)
 
@@ -159,16 +160,19 @@ def main() -> int:
         failures = 0
         for index, device in enumerate(devices, 1):
             name = device.get("displayName", device.get("id", ""))
-            print(f"  [{index}/{len(devices)}] exporting {name}...", file=sys.stderr)
+            if not args.quiet:
+                print(f"  [{index}/{len(devices)}] exporting {name}...", file=sys.stderr)
             try:
                 if save_dir:
                     path = os.path.join(save_dir, backup_filename(device, stamp, args.json))
                     with open(path, "w", encoding="utf-8", newline="\n") as out:
                         count = export_device(device, out, args, token)
+                    # the generated (timestamped) filename is essential output; keep it quiet-proof
                     print(f"    wrote {count} setting(s) to {path}", file=sys.stderr)
                 else:
                     count = export_device(device, sys.stdout, args, token)
-                    print(f"    {count} setting(s)", file=sys.stderr)
+                    if not args.quiet:
+                        print(f"    {count} setting(s)", file=sys.stderr)
             except Exception as exc:
                 failures += 1
                 print(f"  ! {name}: {exc}", file=sys.stderr)

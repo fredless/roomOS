@@ -299,10 +299,11 @@ def main() -> int:
         file_desired: Dict[str, Tuple[str, Any]] = {}
         for path in args.file:
             settings, masked, ignored = parse_config_file(path)
-            print(f"{os.path.basename(path)}: {len(settings)} setting(s)"
-                  + (f", {masked} masked secret(s) skipped" if masked else "")
-                  + (f", {ignored} non-config line(s) ignored" if ignored else ""),
-                  file=sys.stderr)
+            if not args.quiet or masked:  # a skipped secret is always worth a mention
+                print(f"{os.path.basename(path)}: {len(settings)} setting(s)"
+                      + (f", {masked} masked secret(s) skipped" if masked else "")
+                      + (f", {ignored} non-config line(s) ignored" if ignored else ""),
+                      file=sys.stderr)
             for key, value in settings:
                 file_desired[key.lower()] = (key, value)
 
@@ -322,20 +323,21 @@ def main() -> int:
             print("No devices selected.", file=sys.stderr)
             return 1
 
-        if file_desired:
-            print(f"File setting(s): {len(file_desired)} "
-                  "(validated against each device before applying)", file=sys.stderr)
-        if explicit_ops:
-            print(f"Explicit change(s) ({len(explicit_ops)}):", file=sys.stderr)
-            for op in explicit_ops:
-                key = op["path"].removesuffix("/sources/configured/value")
-                if op["op"] == "replace":
-                    print(f"  set    {key} = {op['value']}", file=sys.stderr)
-                else:
-                    print(f"  remove {key} (revert to default)", file=sys.stderr)
-        print(f"Target device(s) ({len(devices)}):", file=sys.stderr)
-        for device in devices:
-            print(f"  {device_summary(device)}", file=sys.stderr)
+        if not args.quiet:
+            if file_desired:
+                print(f"File setting(s): {len(file_desired)} "
+                      "(validated against each device before applying)", file=sys.stderr)
+            if explicit_ops:
+                print(f"Explicit change(s) ({len(explicit_ops)}):", file=sys.stderr)
+                for op in explicit_ops:
+                    key = op["path"].removesuffix("/sources/configured/value")
+                    if op["op"] == "replace":
+                        print(f"  set    {key} = {op['value']}", file=sys.stderr)
+                    else:
+                        print(f"  remove {key} (revert to default)", file=sys.stderr)
+            print(f"Target device(s) ({len(devices)}):", file=sys.stderr)
+            for device in devices:
+                print(f"  {device_summary(device)}", file=sys.stderr)
 
         if not args.dry_run and not args.yes:
             try:
@@ -353,17 +355,20 @@ def main() -> int:
         for index, device in enumerate(devices, 1):
             name = device.get("displayName", device.get("id", ""))
             verb = "checking" if args.dry_run else "patching"
-            print(f"  [{index}/{len(devices)}] {verb} {name}...", file=sys.stderr)
+            if not args.quiet or args.dry_run:
+                print(f"  [{index}/{len(devices)}] {verb} {name}...", file=sys.stderr)
             try:
                 ops = list(explicit_ops)
                 if file_desired:
                     file_ops, summary = validate_file_ops(
                         file_desired, device, token, args.base_url, args.timeout,
                         args.verbose)
-                    print(f"    file settings: {summary}", file=sys.stderr)
+                    if not args.quiet or args.dry_run:
+                        print(f"    file settings: {summary}", file=sys.stderr)
                     ops = file_ops + ops
                 if not ops:
-                    print("    nothing to change.", file=sys.stderr)
+                    if not args.quiet:
+                        print("    nothing to change.", file=sys.stderr)
                     continue
                 if args.dry_run:
                     print(f"    would apply {len(ops)} change(s):", file=sys.stderr)
@@ -375,7 +380,8 @@ def main() -> int:
                             print(f"      remove {key}", file=sys.stderr)
                     continue
                 result = xconfig_patch(ops, device["id"], token, args.base_url, args.timeout)
-                print(f"    applied {len(ops)} change(s).", file=sys.stderr)
+                if not args.quiet:
+                    print(f"    applied {len(ops)} change(s).", file=sys.stderr)
                 if args.json:
                     print(json.dumps(result, indent=2))
             except Exception as exc:

@@ -175,8 +175,9 @@ def main() -> int:
         rows = []
         total_nulls = 0
         for index, device in enumerate(matched, 1):
-            print(f"  [{index}/{len(matched)}] querying {device.get('displayName', device.get('id', ''))}...",
-                  file=sys.stderr)
+            if not args.quiet:
+                print(f"  [{index}/{len(matched)}] querying "
+                      f"{device.get('displayName', device.get('id', ''))}...", file=sys.stderr)
             row, nulls = query_device(device, args.status, args.config,
                                       token, args.base_url, args.timeout, args.verbose)
             rows.append(row)
@@ -193,7 +194,7 @@ def main() -> int:
 
         if args.output:
             print(f"Wrote {len(rows)} row(s) to {args.output}", file=sys.stderr)
-        if total_nulls and not args.verbose:
+        if total_nulls and not args.verbose and not args.quiet:
             print(f"Note: {total_nulls} value lookup(s) returned (null) — check path casing "
                   "(paths are case-sensitive) or re-run with --verbose to see why.",
                   file=sys.stderr)
